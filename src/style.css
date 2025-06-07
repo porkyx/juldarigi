@@ -1,0 +1,149 @@
+@import "tailwindcss";
+
+.app {
+    text-align: center;
+    padding: 2rem;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.url-input {
+    @apply appearance-none rounded-md bg-white border-2 border-sky-400 px-2 py-2 leading-tight;
+}
+
+.counter-section {
+    margin: 2rem 0;
+}
+
+.counter-btn {
+    font-size: 1.2rem;
+    padding: 0.6rem 1.2rem;
+    background: #646cff;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.25s;
+}
+
+.counter-btn:hover {
+    background: #535bf2;
+}
+
+button {
+    font-size: 1rem;
+    padding: 0.5rem 1rem;
+    margin: 0.25rem;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    cursor: pointer;
+    background-color: #646cff;
+    color: white;
+    transition: background-color 0.25s, opacity 0.25s;
+}
+
+button:hover:not(:disabled) {
+    background-color: #535bf2;
+}
+
+button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Radio button styles */
+input[type="radio"] {
+    margin-right: 5px;
+    cursor: pointer;
+}
+
+label {
+    user-select: none;
+}
+
+/* Form input styles */
+input[type="number"],
+input[type="date"] {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 14px;
+}
+
+input[type="number"]:focus,
+input[type="date"]:focus {
+    outline: none;
+    border-color: #646cff;
+}
+
+/* Progress display styles */
+.progress-info {
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Results display styles */
+.results-display h3 {
+    margin-bottom: 15px;
+    color: #333;
+}
+
+.error-message {
+    animation: shake 0.3s;
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
+}
+
+/* Table styles */
+table {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+}
+
+table th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+    color: #495057;
+}
+
+table td {
+    color: #212529;
+}
+
+table tr:hover {
+    background-color: #e3f2fd !important;
+}
+
+/* Copy button styles */
+.copy-button {
+    background-color: #646cff;
+    transition: all 0.2s ease;
+}
+
+.copy-button:hover {
+    @apply hover:bg-sky-500;
+    transform: translateY(-1px);
+}
+
+/* CSV export button styles */
+button[style*="background-color: rgb(255, 193, 7)"] {
+    transition: all 0.2s ease;
+}
+
+button[style*="background-color: rgb(255, 193, 7)"]:hover {
+    background-color: #e0a800 !important;
+    transform: translateY(-1px);
+}
+
+/* General button hover effects */
+button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
