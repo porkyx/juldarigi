@@ -7,9 +7,10 @@ export default defineConfig({
   plugins: [scalaJSPlugin(), tailwindcss()],
   root: '.',
   publicDir: 'public',
-  base: './',
+  base: process.env.NODE_ENV === 'production' ? './' : '/',
   build: {
     outDir: 'dist',
+    assetsDir: 'assets',
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html')
