@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [scalaJSPlugin(), tailwindcss()],
   root: '.',
   publicDir: 'public',
+  base: './',
   build: {
     outDir: 'dist',
     rollupOptions: {

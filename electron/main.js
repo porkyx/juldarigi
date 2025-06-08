@@ -30,6 +30,12 @@ async function createWindow() {
     // 프로덕션 빌드에서는 리소스 폴더의 dist에서 파일들을 로드
     const indexPath = path.join(process.resourcesPath, 'dist', 'index.html');
     await mainWindow.loadFile(indexPath)
+      .catch((error) => {
+        console.error('Failed to load index.html:', error);
+        // 대체 경로 시도
+        const altPath = path.join(__dirname, '..', 'dist', 'index.html');
+        return mainWindow.loadFile(altPath);
+      })
       .catch(console.error)
   }
 

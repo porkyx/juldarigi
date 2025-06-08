@@ -1,49 +1,15 @@
-# Juldarigi
+# 줄다리기 - 갤창랭킹 수집기
 
-Scala.js + Vite + Electron boilerplate with Laminar
+해당 프로젝트를 이용하려면 사전에 [Node.js](https://nodejs.org/ko)가 설치되어야 합니다.
 
-## Tech Stack
+## 실행방법
 
-- **Scala 3.7.1** with Scala.js
-- **sbt 1.11.1** for build management
-- **Laminar** for reactive UI
-- **Vite** for fast development and building
-- **Electron** for desktop application
-
-## Development
-
-1. Install dependencies:
-```bash
+```
+# git clone 후 아래 명령어를 입력하세요.
 npm install
+
+# 이후에..
+npm run server
 ```
 
-2. Start development server:
-```bash
-npm run dev
-```
-
-3. Run Electron app in development:
-```bash
-npm run electron:dev
-```
-
-## Build
-
-Build for production:
-```bash
-npm run build
-```
-
-Build Electron app:
-```bash
-npm run electron:build
-```
-
-## Scripts
-
-- `npm run dev` - Start Scala.js compilation and Vite dev server
-- `npm run build` - Build for production
-- `npm run electron` - Run Electron app
-- `npm run electron:dev` - Run Electron app with hot reload
-- `npm run electron:build` - Build Electron app for distribution
-- `npm run clean` - Clean build artifacts
+`npm run server`가 정상적으로 작동한다면 이후에 실행파일을 실행합니다.  
