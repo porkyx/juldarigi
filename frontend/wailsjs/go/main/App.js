@@ -6,6 +6,10 @@ export function CancelScrape() {
   return window['go']['main']['App']['CancelScrape']();
 }
 
+export function SaveCaptureImage(arg1) {
+  return window['go']['main']['App']['SaveCaptureImage'](arg1);
+}
+
 export function ScrapeDCGallery(arg1) {
   return window['go']['main']['App']['ScrapeDCGallery'](arg1);
 }

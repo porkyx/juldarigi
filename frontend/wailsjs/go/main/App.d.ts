@@ -4,4 +4,6 @@ import {main} from '../models';
 
 export function CancelScrape():Promise<boolean>;
 
+export function SaveCaptureImage(arg1:main.SaveCaptureRequest):Promise<string>;
+
 export function ScrapeDCGallery(arg1:main.ScrapeRequest):Promise<main.ScrapeResult>;

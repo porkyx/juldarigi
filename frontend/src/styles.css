@@ -296,9 +296,9 @@ dd {
 .metric-group li {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: 8px;
-  min-height: 42px;
+  min-height: 64px;
   padding: 6px 0;
   border-bottom: 1px solid #edf2f7;
 }
@@ -310,6 +310,7 @@ dd {
 .metric-rank {
   color: #475569;
   font-weight: 750;
+  padding-top: 15px;
   text-align: center;
 }
 
@@ -344,11 +345,24 @@ dd {
   text-decoration: underline;
 }
 
+.metric-group a.source-url {
+  display: block;
+  margin-top: 3px;
+  color: #2563eb;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  line-height: 1.35;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
 .metric-group em {
   color: #0f766e;
   font-size: 13px;
   font-style: normal;
   font-weight: 750;
+  padding-top: 16px;
   white-space: nowrap;
 }
 

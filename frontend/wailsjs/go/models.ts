@@ -60,6 +60,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SaveCaptureRequest {
+	    dataUrl: string;
+	    defaultFilename: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SaveCaptureRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dataUrl = source["dataUrl"];
+	        this.defaultFilename = source["defaultFilename"];
+	    }
+	}
 	export class ScrapeRequest {
 	    url: string;
 	    pages: number;

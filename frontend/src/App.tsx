@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CalendarDays,
+  Camera,
   Clipboard,
   Download,
   Eye,
@@ -12,7 +13,7 @@ import {
   Square,
   ThumbsUp,
 } from 'lucide-react';
-import { CancelScrape, ScrapeDCGallery } from '../wailsjs/go/main/App';
+import { CancelScrape, SaveCaptureImage, ScrapeDCGallery } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import {
@@ -22,6 +23,7 @@ import {
   safeFilePart,
   timestampForFilename,
 } from './domain';
+import { CaptureMetricGroup, captureTopLimit, metricPostLabel, renderCapturePNG } from './capture';
 
 type ScrapeMode = 'pages' | 'dates';
 
@@ -37,14 +39,8 @@ interface MessagePayload {
   message: string;
 }
 
-const topLimit = 100;
-
-function metricPostLabel(entry: main.MetricRank) {
-  const number = entry.postNumber ? `${entry.postNumber}번` : '';
-  if (number && entry.postTitle) {
-    return `${number} · ${entry.postTitle}`;
-  }
-  return entry.postTitle || (number ? `${number} 글` : '대상 글');
+interface MetricGroup extends CaptureMetricGroup {
+  Icon: typeof Eye;
 }
 
 function App() {
@@ -61,7 +57,7 @@ function App() {
   const tableRef = useRef<HTMLTableElement | null>(null);
 
   const isValidUrl = useMemo(() => isValidDCGalleryUrl(url), [url]);
-  const visibleUsers = result?.userStats.slice(0, topLimit) ?? [];
+  const visibleUsers = result?.userStats.slice(0, captureTopLimit) ?? [];
   const metricGroups = useMemo(
     () => [
       {
@@ -241,6 +237,23 @@ function App() {
     setNotice('CSV 파일을 생성했습니다.');
   }
 
+  async function saveCaptureImage() {
+    if (!result || !visibleUsers.length) {
+      return;
+    }
+
+    try {
+      const dataUrl = await renderCapturePNG(result, visibleUsers, metricGroups);
+      const savedPath = await SaveCaptureImage({
+        dataUrl,
+        defaultFilename: `갤창랭킹_${safeFilePart(result.galleryId)}_${timestampForFilename()}.png`,
+      });
+      setNotice(savedPath ? `캡처 이미지를 저장했습니다: ${savedPath}` : '캡처 저장을 취소했습니다.');
+    } catch (captureError) {
+      setError(captureError instanceof Error ? captureError.message : String(captureError));
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -357,7 +370,7 @@ function App() {
         <section className="results-band">
           <div className="results-heading">
             <div>
-              <h2>1 ~ {Math.min(topLimit, result.userStats.length)}위 게시글 수 랭킹</h2>
+              <h2>1 ~ {Math.min(captureTopLimit, result.userStats.length)}위 게시글 수 랭킹</h2>
               <p>{resultSummary(result)}</p>
             </div>
             <div className="table-actions">
@@ -372,6 +385,10 @@ function App() {
               <button type="button" onClick={exportToCSV} title="CSV 내보내기">
                 <Download size={16} />
                 CSV
+              </button>
+              <button type="button" onClick={saveCaptureImage} title="캡처 저장">
+                <Camera size={16} />
+                캡처 저장
               </button>
             </div>
           </div>
@@ -392,13 +409,12 @@ function App() {
                           <span className="metric-rank">{entry.rank}</span>
                           <div>
                             <strong>{entry.nickname}</strong>
+                            <span>{metricPostLabel(entry)}</span>
                             {entry.postUrl ? (
-                              <a href={entry.postUrl} target="_blank" rel="noreferrer">
-                                {metricPostLabel(entry)}
+                              <a className="source-url" href={entry.postUrl} target="_blank" rel="noreferrer">
+                                {entry.postUrl}
                               </a>
-                            ) : (
-                              <span>{metricPostLabel(entry)}</span>
-                            )}
+                            ) : null}
                           </div>
                           <em>
                             {entry.value.toLocaleString()}
