@@ -9,9 +9,16 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+type scrapeService interface {
+	Scrape(ctx context.Context, request ScrapeRequest, emit EventEmitter) (*ScrapeResult, error)
+}
+
+type runtimeEventEmitter func(ctx context.Context, eventName string, optionalData ...interface{})
+
 type App struct {
 	ctx     context.Context
-	scraper *Scraper
+	scraper scrapeService
+	emit    runtimeEventEmitter
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -20,6 +27,7 @@ type App struct {
 func NewApp() *App {
 	return &App{
 		scraper: NewScraper(nil),
+		emit:    runtime.EventsEmit,
 	}
 }
 
@@ -44,6 +52,9 @@ func (a *App) ScrapeDCGallery(request ScrapeRequest) (*ScrapeResult, error) {
 	}
 	if request.StartDate == "" && request.EndDate == "" && request.Pages < 1 {
 		request.Pages = 1
+	}
+	if a.scraper == nil {
+		return nil, errors.New("scraper is not configured")
 	}
 
 	baseContext := a.ctx
@@ -86,8 +97,8 @@ func (a *App) CancelScrape() bool {
 }
 
 func (a *App) emitScrapeEvent(eventName string, payload interface{}) {
-	if a.ctx == nil {
+	if a.ctx == nil || a.emit == nil {
 		return
 	}
-	runtime.EventsEmit(a.ctx, "scrape:"+eventName, payload)
+	a.emit(a.ctx, "scrape:"+eventName, payload)
 }

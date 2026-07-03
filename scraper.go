@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	defaultPages      = 1
-	maxRetries        = 5
-	maxDateRangePages = 10000
+	defaultPages             = 1
+	defaultMaxRetries        = 5
+	defaultMaxDateRangePages = 10000
 )
 
 type EventEmitter func(eventName string, payload interface{})
+type retryWaiter func(ctx context.Context, attempt int, maxAttempts int) error
 
 type ScrapeRequest struct {
 	URL       string `json:"url"`
@@ -86,8 +87,11 @@ type scrapeTotals struct {
 }
 
 type Scraper struct {
-	client *http.Client
-	now    func() time.Time
+	client            *http.Client
+	now               func() time.Time
+	waitBeforeRetry   retryWaiter
+	maxRetries        int
+	maxDateRangePages int
 }
 
 func NewScraper(client *http.Client) *Scraper {
@@ -96,12 +100,19 @@ func NewScraper(client *http.Client) *Scraper {
 	}
 
 	return &Scraper{
-		client: client,
-		now:    time.Now,
+		client:            client,
+		now:               time.Now,
+		waitBeforeRetry:   waitBeforeRetry,
+		maxRetries:        defaultMaxRetries,
+		maxDateRangePages: defaultMaxDateRangePages,
 	}
 }
 
 func (s *Scraper) Scrape(ctx context.Context, request ScrapeRequest, emit EventEmitter) (*ScrapeResult, error) {
+	if ctx == nil {
+		return nil, errors.New("context is required")
+	}
+
 	galleryInfo, err := ParseGalleryURL(request.URL)
 	if err != nil {
 		return nil, err
@@ -151,10 +162,14 @@ func ParseGalleryURL(rawURL string) (GalleryInfo, error) {
 	switch {
 	case len(segments) >= 3 && segments[0] == "mini" && segments[1] == "board" && segments[2] == "lists":
 		return galleryInfoFromID(trimmed, queryID, "mini")
+	case len(segments) >= 2 && segments[0] == "mini" && segments[1] == "board":
+		return GalleryInfo{}, errors.New("Invalid URL format. Expected DCInside gallery URL")
 	case len(segments) >= 2 && segments[0] == "mini":
 		return galleryInfoFromID(trimmed, segments[1], "mini")
 	case len(segments) >= 3 && segments[0] == "mgallery" && segments[1] == "board" && segments[2] == "lists":
 		return galleryInfoFromID(trimmed, queryID, "mgallery")
+	case len(segments) >= 2 && segments[0] == "mgallery" && segments[1] == "board":
+		return GalleryInfo{}, errors.New("Invalid URL format. Expected DCInside gallery URL")
 	case len(segments) >= 2 && segments[0] == "mgallery":
 		return galleryInfoFromID(trimmed, segments[1], "mgallery")
 	case len(segments) >= 2 && segments[0] == "board" && segments[1] == "lists":
@@ -221,6 +236,9 @@ func (s *Scraper) scrapePages(ctx context.Context, galleryInfo GalleryInfo, page
 		pageURL := BuildPageURL(galleryInfo, pageNumber)
 		posts, err := s.scrapePostsWithRetry(ctx, pageURL)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return scrapeTotals{}, ctxErr
+			}
 			emitEvent(emit, "warning", MessagePayload{Message: fmt.Sprintf("Skipping page %d due to errors: %s", pageNumber, err.Error())})
 			posts = nil
 		}
@@ -245,7 +263,8 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 	totals := scrapeTotals{UserPostCount: map[string]UserStat{}}
 	emitEvent(emit, "info", MessagePayload{Message: fmt.Sprintf("Starting date range scraping from %s to %s", displayDateBoundary(startDate, "beginning"), displayDateBoundary(endDate, "latest"))})
 
-	for pageNumber := 1; pageNumber <= maxDateRangePages; pageNumber++ {
+	pageLimit := s.dateRangePageLimit()
+	for pageNumber := 1; pageNumber <= pageLimit; pageNumber++ {
 		if err := ctx.Err(); err != nil {
 			return scrapeTotals{}, err
 		}
@@ -260,6 +279,9 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 		pageURL := BuildPageURL(galleryInfo, pageNumber)
 		pageData, err := s.scrapeDatePageWithRetry(ctx, pageURL, startDate, endDate)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return scrapeTotals{}, ctxErr
+			}
 			emitEvent(emit, "warning", MessagePayload{Message: fmt.Sprintf("Skipping page %d due to errors: %s", pageNumber, err.Error())})
 			totals.PagesScraped = pageNumber
 			continue
@@ -286,18 +308,19 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 		}
 	}
 
-	return scrapeTotals{}, fmt.Errorf("date range scraping stopped after safety limit of %d pages", maxDateRangePages)
+	return scrapeTotals{}, fmt.Errorf("date range scraping stopped after safety limit of %d pages", pageLimit)
 }
 
 func (s *Scraper) scrapePostsWithRetry(ctx context.Context, pageURL string) ([]Post, error) {
 	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	retryLimit := s.retryLimit()
+	for attempt := 1; attempt <= retryLimit; attempt++ {
 		doc, err := s.fetchDocument(ctx, pageURL)
 		if err == nil {
 			return extractPostsFromDocument(doc), nil
 		}
 		lastErr = err
-		if err := waitBeforeRetry(ctx, attempt); err != nil {
+		if err := s.wait(ctx, attempt, retryLimit); err != nil {
 			return nil, err
 		}
 	}
@@ -306,13 +329,14 @@ func (s *Scraper) scrapePostsWithRetry(ctx context.Context, pageURL string) ([]P
 
 func (s *Scraper) scrapeDatePageWithRetry(ctx context.Context, pageURL, startDate, endDate string) (datePageData, error) {
 	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	retryLimit := s.retryLimit()
+	for attempt := 1; attempt <= retryLimit; attempt++ {
 		doc, err := s.fetchDocument(ctx, pageURL)
 		if err == nil {
-			return extractPostsWithDateRange(doc, startDate, endDate, s.now()), nil
+			return extractPostsWithDateRange(doc, startDate, endDate, s.currentTime()), nil
 		}
 		lastErr = err
-		if err := waitBeforeRetry(ctx, attempt); err != nil {
+		if err := s.wait(ctx, attempt, retryLimit); err != nil {
 			return datePageData{}, err
 		}
 	}
@@ -327,7 +351,12 @@ func (s *Scraper) fetchDocument(ctx context.Context, pageURL string) (*goquery.D
 	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36")
 	request.Header.Set("Accept-Language", "ko-KR,ko;q=0.9,en;q=0.8")
 
-	response, err := s.client.Do(request)
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -445,13 +474,20 @@ func normalizeDateWithNow(dateString string, now time.Time) string {
 	if len(trimmed) >= len("2006-01-02") && isDatePrefix(trimmed[:len("2006-01-02")]) {
 		return trimmed[:len("2006-01-02")]
 	}
-	if len(trimmed) == len("15:04") && trimmed[2] == ':' {
+	if len(trimmed) == len("15:04") && trimmed[2] == ':' && isTwoDigits(trimmed[:2]) && isTwoDigits(trimmed[3:]) {
 		return now.Format("2006-01-02")
 	}
-	if len(trimmed) == len("01.02") && trimmed[2] == '.' {
+	if len(trimmed) == len("01.02") && trimmed[2] == '.' && isTwoDigits(trimmed[:2]) && isTwoDigits(trimmed[3:]) {
 		return fmt.Sprintf("%04d-%s-%s", now.Year(), trimmed[:2], trimmed[3:])
 	}
 	return ""
+}
+
+func isTwoDigits(value string) bool {
+	if len(value) != 2 {
+		return false
+	}
+	return value[0] >= '0' && value[0] <= '9' && value[1] >= '0' && value[1] <= '9'
 }
 
 func isDatePrefix(value string) bool {
@@ -549,8 +585,36 @@ func displayDateBoundary(value, fallback string) string {
 	return value
 }
 
-func waitBeforeRetry(ctx context.Context, attempt int) error {
-	if attempt >= maxRetries {
+func (s *Scraper) retryLimit() int {
+	if s == nil || s.maxRetries < 1 {
+		return defaultMaxRetries
+	}
+	return s.maxRetries
+}
+
+func (s *Scraper) dateRangePageLimit() int {
+	if s == nil || s.maxDateRangePages < 1 {
+		return defaultMaxDateRangePages
+	}
+	return s.maxDateRangePages
+}
+
+func (s *Scraper) currentTime() time.Time {
+	if s == nil || s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
+func (s *Scraper) wait(ctx context.Context, attempt int, maxAttempts int) error {
+	if s != nil && s.waitBeforeRetry != nil {
+		return s.waitBeforeRetry(ctx, attempt, maxAttempts)
+	}
+	return waitBeforeRetry(ctx, attempt, maxAttempts)
+}
+
+func waitBeforeRetry(ctx context.Context, attempt int, maxAttempts int) error {
+	if attempt >= maxAttempts {
 		return nil
 	}
 

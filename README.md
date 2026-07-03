@@ -25,3 +25,11 @@ wails build
 ```
 
 빌드된 앱은 별도 Node.js 서버를 실행하지 않고 Go 백엔드와 embed된 React 프론트엔드만으로 동작합니다.
+
+## 검증
+
+```powershell
+scripts/pre-commit.ps1
+```
+
+릴리즈 후보는 [release checklist](docs/release-checklist.md)를 확인하고 `scripts/pre-release.ps1`을 실행합니다.
