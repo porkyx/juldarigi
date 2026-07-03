@@ -366,6 +366,7 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 	emitEvent(emit, "info", MessagePayload{Message: fmt.Sprintf("Starting date range scraping from %s to %s", displayDateBoundary(startDate, "beginning"), displayDateBoundary(endDate, "latest"))})
 
 	pageLimit := s.dateRangePageLimit()
+	olderStopCandidatePages := 0
 	for pageNumber := 1; pageNumber <= pageLimit; pageNumber++ {
 		if err := ctx.Err(); err != nil {
 			return scrapeTotals{}, err
@@ -387,6 +388,7 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 			}
 			emitEvent(emit, "warning", MessagePayload{Message: fmt.Sprintf("Skipping page %d due to errors: %s", pageNumber, err.Error())})
 			totals.PagesScraped = pageNumber
+			olderStopCandidatePages = 0
 			continue
 		}
 
@@ -417,9 +419,15 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 		})
 
 		if startDate != "" && pageData.FoundOlderDate && !pageData.FoundNewerDate {
-			emitEvent(emit, "info", MessagePayload{Message: "Found posts older than target date, stopping..."})
-			return totals, nil
+			olderStopCandidatePages++
+			if olderStopCandidatePages >= 2 {
+				emitEvent(emit, "info", MessagePayload{Message: "Confirmed posts older than target date, stopping..."})
+				return totals, nil
+			}
+			emitEvent(emit, "info", MessagePayload{Message: "Found posts older than target date, checking next page..."})
+			continue
 		}
+		olderStopCandidatePages = 0
 		if startDate == "" && len(pageData.Posts) == 0 {
 			emitEvent(emit, "info", MessagePayload{Message: "No more posts found, stopping..."})
 			return totals, nil
@@ -635,6 +643,7 @@ func extractPostsFromDocument(doc *goquery.Document) []Post {
 
 func extractPostsWithDateRange(doc *goquery.Document, startDate, endDate string, now time.Time) datePageData {
 	data := datePageData{Posts: make([]Post, 0)}
+	lastCollectableDate := ""
 	doc.Find("tbody.listwrap2 tr").Each(func(_ int, row *goquery.Selection) {
 		if isNoticeRow(row) {
 			return
@@ -646,14 +655,19 @@ func extractPostsWithDateRange(doc *goquery.Document, startDate, endDate string,
 			return
 		}
 
+		post, ok := extractPostFromWriter(writerSelection)
+		if !ok {
+			return
+		}
+
 		postDate := strings.TrimSpace(selectionAttrOrText(dateSelection, "title"))
 		normalizedDate := normalizeDateWithNow(postDate, now)
 		if normalizedDate == "" {
 			return
 		}
+		lastCollectableDate = normalizedDate
 
 		if startDate != "" && normalizedDate < startDate {
-			data.FoundOlderDate = true
 			return
 		}
 		if endDate != "" && normalizedDate > endDate {
@@ -661,14 +675,14 @@ func extractPostsWithDateRange(doc *goquery.Document, startDate, endDate string,
 			return
 		}
 
-		post, ok := extractPostFromWriter(writerSelection)
-		if !ok {
-			return
-		}
 		post.Date = postDate
 		enrichPostFromRow(row, &post)
 		data.Posts = append(data.Posts, post)
 	})
+
+	if startDate != "" && lastCollectableDate != "" && lastCollectableDate < startDate {
+		data.FoundOlderDate = true
+	}
 
 	return data
 }
@@ -846,6 +860,12 @@ func normalizeDateWithNow(dateString string, now time.Time) string {
 	if len(trimmed) >= len("2006-01-02") && isDatePrefix(trimmed[:len("2006-01-02")]) {
 		return trimmed[:len("2006-01-02")]
 	}
+	if len(trimmed) >= len("2006.01.02") && isDelimitedDatePrefix(trimmed[:len("2006.01.02")], 4) {
+		return formatDelimitedDatePrefix(trimmed[:len("2006.01.02")], 4, 0)
+	}
+	if len(trimmed) >= len("06.01.02") && isDelimitedDatePrefix(trimmed[:len("06.01.02")], 2) {
+		return formatDelimitedDatePrefix(trimmed[:len("06.01.02")], 2, 2000)
+	}
 	if len(trimmed) == len("15:04") && trimmed[2] == ':' && isTwoDigits(trimmed[:2]) && isTwoDigits(trimmed[3:]) {
 		return now.Format("2006-01-02")
 	}
@@ -876,6 +896,41 @@ func isDatePrefix(value string) bool {
 		}
 	}
 	return true
+}
+
+func isDelimitedDatePrefix(value string, yearDigits int) bool {
+	firstSep := yearDigits
+	secondSep := yearDigits + 3
+	if len(value) != secondSep+3 {
+		return false
+	}
+	separator := value[firstSep]
+	if separator != '.' && separator != '/' {
+		return false
+	}
+	if value[secondSep] != separator {
+		return false
+	}
+	for i, char := range value {
+		if i == firstSep || i == secondSep {
+			continue
+		}
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func formatDelimitedDatePrefix(value string, yearDigits int, yearOffset int) string {
+	yearValue, err := strconv.Atoi(value[:yearDigits])
+	if err != nil {
+		return ""
+	}
+	year := yearValue + yearOffset
+	monthStart := yearDigits + 1
+	dayStart := yearDigits + 4
+	return fmt.Sprintf("%04d-%s-%s", year, value[monthStart:monthStart+2], value[dayStart:dayStart+2])
 }
 
 func aggregateUserPosts(posts []Post) map[string]UserStat {

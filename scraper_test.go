@@ -139,11 +139,15 @@ func TestNormalizeDateWithNow(t *testing.T) {
 		want  string
 	}{
 		{input: "2026-07-02 23:59", want: "2026-07-02"},
+		{input: "2026.07.02 23:59", want: "2026-07-02"},
+		{input: "2026/07/02 23:59", want: "2026-07-02"},
+		{input: "26.06.02", want: "2026-06-02"},
+		{input: "26/06/29", want: "2026-06-29"},
 		{input: "14:30", want: "2026-07-03"},
 		{input: "06.30", want: "2026-06-30"},
 		{input: "", want: ""},
 		{input: "not-a-date", want: ""},
-		{input: "2026/07/02", want: ""},
+		{input: "2026:07:02", want: ""},
 		{input: "2026-0x-02", want: ""},
 		{input: "1x:30", want: ""},
 		{input: "0x.30", want: ""},
@@ -387,6 +391,30 @@ func TestExtractPostsWithDateRange(t *testing.T) {
 	}
 	if !data.FoundNewerDate {
 		t.Fatal("FoundNewerDate = false, want true")
+	}
+}
+
+func TestExtractPostsWithDateRangeDoesNotStopOnOlderInsertedRows(t *testing.T) {
+	t.Parallel()
+
+	doc := mustDocument(t, galleryHTML(
+		datedPostRow("first", "First", "2026-06-25 02:21:12", "06.25")+
+			datedPostRow("inserted-old", "Inserted Old", "2026-04-13 18:58:37", "04.13")+
+			datedPostRow("second", "Second", "2026-06-25 02:20:08", "06.25"),
+	))
+
+	data := extractPostsWithDateRange(doc, "2026-06-01", "2026-06-30", time.Date(2026, 7, 3, 14, 0, 0, 0, time.Local))
+	if len(data.Posts) != 2 {
+		t.Fatalf("len(data.Posts) = %d, want 2", len(data.Posts))
+	}
+	if data.Posts[0].UID != "first" || data.Posts[1].UID != "second" {
+		t.Fatalf("included posts = %+v, want only in-range chronological rows", data.Posts)
+	}
+	if data.FoundOlderDate {
+		t.Fatal("FoundOlderDate = true, want false for a middle inserted older row")
+	}
+	if data.FoundNewerDate {
+		t.Fatal("FoundNewerDate = true, want false")
 	}
 }
 
@@ -1043,13 +1071,17 @@ func TestScrapePageRetryPropagatesCancellation(t *testing.T) {
 	}
 }
 
-func TestScrapeDateRangeStopsOnOlderEmptyPage(t *testing.T) {
+func TestScrapeDateRangeStopsAfterConsecutiveOlderPages(t *testing.T) {
+	requests := 0
 	scraper := newTestScraper(func(req *http.Request) (*http.Response, error) {
+		requests++
 		switch req.URL.Query().Get("page") {
 		case "1":
 			return htmlResponse(http.StatusOK, galleryHTML(datedPostRow("u1", "Alice", "2026-07-02 12:00", "07.02"))), nil
 		case "2":
 			return htmlResponse(http.StatusOK, galleryHTML(datedPostRow("old", "Old", "2026-06-30 12:00", "06.30"))), nil
+		case "3":
+			return htmlResponse(http.StatusOK, galleryHTML(datedPostRow("older", "Older", "2026-06-29 12:00", "06.29"))), nil
 		default:
 			t.Fatalf("unexpected page query: %s", req.URL.RawQuery)
 			return nil, nil
@@ -1064,7 +1096,10 @@ func TestScrapeDateRangeStopsOnOlderEmptyPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scrape returned error: %v", err)
 	}
-	if result.PagesScraped != 2 || result.TotalPosts != 1 {
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
+	}
+	if result.PagesScraped != 3 || result.TotalPosts != 1 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
@@ -1084,6 +1119,8 @@ func TestScrapeDateRangeContinuesPastMixedPinnedDates(t *testing.T) {
 				datedPostRow("target", "Target", "2026-06-02 12:00:00", "26.06.02")+
 					datedPostRow("older", "Older", "2026-05-31 23:59:59", "26.05.31"),
 			)), nil
+		case "3":
+			return htmlResponse(http.StatusOK, galleryHTML(datedPostRow("older-confirm", "Older Confirm", "2026-05-31 12:00:00", "26.05.31"))), nil
 		default:
 			t.Fatalf("unexpected page query: %s", req.URL.RawQuery)
 			return nil, nil
@@ -1098,14 +1135,58 @@ func TestScrapeDateRangeContinuesPastMixedPinnedDates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scrape returned error: %v", err)
 	}
-	if requests != 2 {
-		t.Fatalf("requests = %d, want 2", requests)
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
 	}
-	if result.PagesScraped != 2 || result.TotalPosts != 1 || result.UniqueUsers != 1 {
+	if result.PagesScraped != 3 || result.TotalPosts != 1 || result.UniqueUsers != 1 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	if result.UserStats[0].UID != "target" {
 		t.Fatalf("included UID = %q, want target", result.UserStats[0].UID)
+	}
+}
+
+func TestScrapeDateRangeContinuesPastOlderInsertedRows(t *testing.T) {
+	requests := 0
+	scraper := newTestScraper(func(req *http.Request) (*http.Response, error) {
+		requests++
+		switch req.URL.Query().Get("page") {
+		case "1":
+			return htmlResponse(http.StatusOK, galleryHTML(
+				datedPostRow("first", "First", "2026-06-25 02:21:12", "06.25")+
+					datedPostRow("inserted-old", "Inserted Old", "2026-04-13 18:58:37", "04.13"),
+			)), nil
+		case "2":
+			return htmlResponse(http.StatusOK, galleryHTML(datedPostRow("second", "Second", "2026-06-24 02:20:08", "06.24"))), nil
+		case "3":
+			return htmlResponse(http.StatusOK, galleryHTML(
+				datedPostRow("start-boundary", "Start Boundary", "2026-06-01 00:23:22", "06.01")+
+					datedPostRow("older", "Older", "2026-05-31 23:59:40", "05.31"),
+			)), nil
+		case "4":
+			return htmlResponse(http.StatusOK, galleryHTML(datedPostRow("older-confirm", "Older Confirm", "2026-05-31 20:00:00", "05.31"))), nil
+		default:
+			t.Fatalf("unexpected page query: %s", req.URL.RawQuery)
+			return nil, nil
+		}
+	})
+
+	result, err := scraper.Scrape(context.Background(), ScrapeRequest{
+		URL:       "https://gall.dcinside.com/mini/vsoop",
+		StartDate: "2026-06-01",
+		EndDate:   "2026-06-30",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Scrape returned error: %v", err)
+	}
+	if requests != 4 {
+		t.Fatalf("requests = %d, want 4", requests)
+	}
+	if result.PagesScraped != 4 || result.TotalPosts != 3 || result.UniqueUsers != 3 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.UserStats[0].UID != "first" || result.UserStats[1].UID != "second" || result.UserStats[2].UID != "start-boundary" {
+		t.Fatalf("included users = %+v, want first, second, start-boundary", result.UserStats)
 	}
 }
 
@@ -1203,11 +1284,11 @@ func TestScrapeDateRangeRetriesNthCallThenSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scrape returned error: %v", err)
 	}
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts)
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
 	}
-	if result.TotalPosts != 0 || result.PagesScraped != 1 {
-		t.Fatalf("result = %+v, want one older empty page", result)
+	if result.TotalPosts != 0 || result.PagesScraped != 2 {
+		t.Fatalf("result = %+v, want two confirmed older empty pages", result)
 	}
 }
 

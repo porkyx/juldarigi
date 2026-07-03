@@ -41,6 +41,8 @@ func FuzzNormalizeDateWithNow(f *testing.F) {
 	for _, seed := range []string{
 		"",
 		"2026-07-03 12:00",
+		"2026.07.03 12:00",
+		"26/06/29",
 		"12:30",
 		"07.03",
 		"bad-date",
