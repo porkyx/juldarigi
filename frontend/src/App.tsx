@@ -17,6 +17,9 @@ import { CancelScrape, SaveCaptureImage, ScrapeDCGallery } from '../wailsjs/go/m
 import { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import {
+  CollectionMode,
+  collectionCountLabel,
+  collectionModeLabel,
   escapeCSVField,
   isValidDCGalleryUrl,
   resultSummary,
@@ -27,10 +30,17 @@ import { CaptureMetricGroup, captureTopLimit, metricPostLabel, renderCapturePNG 
 
 type ScrapeMode = 'pages' | 'dates';
 
+const collectionOptions: Array<{ key: CollectionMode; label: string }> = [
+  { key: 'posts', label: '게시글 수집 (기본값)' },
+  { key: 'posts_comments', label: '게시글 + 댓글 수집' },
+  { key: 'comments', label: '댓글 수집' },
+];
+
 interface ProgressPayload {
   currentPage: number;
   totalPages?: number;
   totalPosts: number;
+  totalComments: number;
   uniqueUsers: number;
   message: string;
 }
@@ -49,6 +59,7 @@ function App() {
   const [pages, setPages] = useState(1);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [collectionMode, setCollectionMode] = useState<CollectionMode>('posts');
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressPayload | null>(null);
   const [result, setResult] = useState<main.ScrapeResult | null>(null);
@@ -58,6 +69,7 @@ function App() {
 
   const isValidUrl = useMemo(() => isValidDCGalleryUrl(url), [url]);
   const visibleUsers = result?.userStats.slice(0, captureTopLimit) ?? [];
+  const resultCountLabel = collectionCountLabel(result?.collectionMode);
   const metricGroups = useMemo(
     () => [
       {
@@ -95,6 +107,7 @@ function App() {
         currentPage: 0,
         totalPages: 0,
         totalPosts: 0,
+        totalComments: 0,
         uniqueUsers: 0,
         message: payload.message,
       });
@@ -126,6 +139,7 @@ function App() {
       pages: mode === 'pages' ? Math.max(1, pages) : 0,
       startDate: mode === 'dates' ? startDate : '',
       endDate: mode === 'dates' ? endDate : '',
+      collectionMode,
     };
 
     try {
@@ -151,9 +165,9 @@ function App() {
     }
 
     const rows = [
-      ['순위', '닉네임', '식별코드', 'IP', '게시물 수'].join('\t'),
+      ['순위', '닉네임', '식별코드', 'IP', resultCountLabel, '게시글', '댓글'].join('\t'),
       ...visibleUsers.map((user, index) =>
-        [index + 1, user.nickname, user.uid, user.ip, `${user.count}개`].join('\t'),
+        [index + 1, user.nickname, user.uid, user.ip, `${user.count}개`, `${user.postCount}개`, `${user.commentCount}개`].join('\t'),
       ),
     ];
     const text = rows.join('\n');
@@ -194,10 +208,18 @@ function App() {
     }
 
     const csvRows = [
-      ['게시글 수 랭킹'].join(','),
-      ['순위', '닉네임', '식별코드', 'IP', '게시물수'].join(','),
+      [`${resultCountLabel} 랭킹`].join(','),
+      ['순위', '닉네임', '식별코드', 'IP', resultCountLabel, '게시글수', '댓글수'].join(','),
       ...visibleUsers.map((user, index) =>
-        [index + 1, escapeCSVField(user.nickname), escapeCSVField(user.uid), escapeCSVField(user.ip), user.count].join(','),
+        [
+          index + 1,
+          escapeCSVField(user.nickname),
+          escapeCSVField(user.uid),
+          escapeCSVField(user.ip),
+          user.count,
+          user.postCount,
+          user.commentCount,
+        ].join(','),
       ),
     ];
     for (const group of metricGroups) {
@@ -259,7 +281,11 @@ function App() {
       <header className="app-header">
         <div>
           <h1>갤창랭킹 수집기</h1>
-          <p>{result ? `${result.galleryId} · ${result.totalPosts.toLocaleString()}개 게시물` : '줄다리기'}</p>
+          <p>
+            {result
+              ? `${result.galleryId} · ${collectionModeLabel(result.collectionMode)} · 게시물 ${result.totalPosts.toLocaleString()}개 · 댓글 ${result.totalComments.toLocaleString()}개`
+              : '줄다리기'}
+          </p>
         </div>
         {isLoading ? (
           <button className="icon-button danger" type="button" onClick={cancelScraping} title="중지">
@@ -326,6 +352,19 @@ function App() {
           </div>
         )}
 
+        <div className="collection-row" aria-label="수집 타입">
+          {collectionOptions.map((option) => (
+            <label className="checkbox-option" key={option.key}>
+              <input
+                type="checkbox"
+                checked={collectionMode === option.key}
+                onChange={() => setCollectionMode(option.key)}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+
         <button
           className="primary-action"
           type="button"
@@ -356,6 +395,10 @@ function App() {
               <dd>{progress.totalPosts.toLocaleString()}</dd>
             </div>
             <div>
+              <dt>댓글</dt>
+              <dd>{progress.totalComments.toLocaleString()}</dd>
+            </div>
+            <div>
               <dt>사용자</dt>
               <dd>{progress.uniqueUsers.toLocaleString()}</dd>
             </div>
@@ -370,7 +413,7 @@ function App() {
         <section className="results-band">
           <div className="results-heading">
             <div>
-              <h2>1 ~ {Math.min(captureTopLimit, result.userStats.length)}위 게시글 수 랭킹</h2>
+              <h2>1 ~ {Math.min(captureTopLimit, result.userStats.length)}위 {resultCountLabel} 랭킹</h2>
               <p>{resultSummary(result)}</p>
             </div>
             <div className="table-actions">
@@ -437,7 +480,9 @@ function App() {
                   <th>닉네임</th>
                   <th>식별코드</th>
                   <th>IP</th>
-                  <th>게시물 수</th>
+                  <th>{resultCountLabel}</th>
+                  <th>게시글</th>
+                  <th>댓글</th>
                 </tr>
               </thead>
               <tbody>
@@ -448,6 +493,8 @@ function App() {
                     <td className="mono">{user.uid}</td>
                     <td className="mono">{user.ip}</td>
                     <td>{user.count.toLocaleString()}개</td>
+                    <td>{user.postCount.toLocaleString()}개</td>
+                    <td>{user.commentCount.toLocaleString()}개</td>
                   </tr>
                 ))}
               </tbody>

@@ -3,8 +3,34 @@ export interface ResultSummaryInput {
   pagesScraped: number;
   startDate?: string | null;
   endDate?: string | null;
+  collectionMode?: string;
   totalPosts: number;
+  totalComments?: number;
   uniqueUsers: number;
+}
+
+export type CollectionMode = 'posts' | 'posts_comments' | 'comments';
+
+export function collectionModeLabel(mode?: string) {
+  switch (mode) {
+    case 'posts_comments':
+      return '게시글 + 댓글 수집';
+    case 'comments':
+      return '댓글 수집';
+    default:
+      return '게시글 수집';
+  }
+}
+
+export function collectionCountLabel(mode?: string) {
+  switch (mode) {
+    case 'posts_comments':
+      return '활동 수';
+    case 'comments':
+      return '댓글 수';
+    default:
+      return '게시글 수';
+  }
 }
 
 export function isValidDCGalleryUrl(value: string) {
@@ -42,7 +68,11 @@ export function resultSummary(result: ResultSummaryInput) {
     result.startDate || result.endDate
       ? `${result.startDate ?? '처음'} ~ ${result.endDate ?? '최신'}`
       : `${result.pagesScraped.toLocaleString()}페이지`;
-  return `${result.galleryId} · ${period} · 게시물 ${result.totalPosts.toLocaleString()}개 · 사용자 ${result.uniqueUsers.toLocaleString()}명`;
+  const commentPart =
+    result.collectionMode === 'comments' || result.collectionMode === 'posts_comments'
+      ? ` · 댓글 ${(result.totalComments ?? 0).toLocaleString()}개`
+      : '';
+  return `${result.galleryId} · ${period} · ${collectionModeLabel(result.collectionMode)} · 게시물 ${result.totalPosts.toLocaleString()}개${commentPart} · 사용자 ${result.uniqueUsers.toLocaleString()}명`;
 }
 
 export function escapeCSVField(field: string) {

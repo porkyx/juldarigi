@@ -79,6 +79,7 @@ export namespace main {
 	    pages: number;
 	    startDate: string;
 	    endDate: string;
+	    collectionMode: string;
 
 	    static createFrom(source: any = {}) {
 	        return new ScrapeRequest(source);
@@ -90,6 +91,7 @@ export namespace main {
 	        this.pages = source["pages"];
 	        this.startDate = source["startDate"];
 	        this.endDate = source["endDate"];
+	        this.collectionMode = source["collectionMode"];
 	    }
 	}
 	export class UserStat {
@@ -97,6 +99,8 @@ export namespace main {
 	    nickname: string;
 	    ip: string;
 	    count: number;
+	    postCount: number;
+	    commentCount: number;
 
 	    static createFrom(source: any = {}) {
 	        return new UserStat(source);
@@ -108,6 +112,8 @@ export namespace main {
 	        this.nickname = source["nickname"];
 	        this.ip = source["ip"];
 	        this.count = source["count"];
+	        this.postCount = source["postCount"];
+	        this.commentCount = source["commentCount"];
 	    }
 	}
 	export class ScrapeResult {
@@ -119,7 +125,9 @@ export namespace main {
 	    pagesScraped: number;
 	    startDate?: string;
 	    endDate?: string;
+	    collectionMode: string;
 	    totalPosts: number;
+	    totalComments: number;
 	    uniqueUsers: number;
 	    userStats: UserStat[];
 	    topMetrics: MetricRankings;
@@ -138,7 +146,9 @@ export namespace main {
 	        this.pagesScraped = source["pagesScraped"];
 	        this.startDate = source["startDate"];
 	        this.endDate = source["endDate"];
+	        this.collectionMode = source["collectionMode"];
 	        this.totalPosts = source["totalPosts"];
+	        this.totalComments = source["totalComments"];
 	        this.uniqueUsers = source["uniqueUsers"];
 	        this.userStats = this.convertValues(source["userStats"], UserStat);
 	        this.topMetrics = this.convertValues(source["topMetrics"], MetricRankings);

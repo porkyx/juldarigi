@@ -24,6 +24,9 @@ func TestAppScrapeDCGalleryTrimsDefaultsAndEmits(t *testing.T) {
 			if request.Pages != 1 {
 				t.Fatalf("Pages = %d, want default 1", request.Pages)
 			}
+			if request.CollectionMode != collectionModeComments {
+				t.Fatalf("CollectionMode = %q, want comments", request.CollectionMode)
+			}
 			emit("progress", ProgressInfo{CurrentPage: 1, Message: "ok"})
 			return &ScrapeResult{Success: true, GalleryID: "vsoop"}, nil
 		},
@@ -38,7 +41,7 @@ func TestAppScrapeDCGalleryTrimsDefaultsAndEmits(t *testing.T) {
 		},
 	}
 
-	result, err := app.ScrapeDCGallery(ScrapeRequest{URL: "  https://gall.dcinside.com/mini/vsoop  "})
+	result, err := app.ScrapeDCGallery(ScrapeRequest{URL: "  https://gall.dcinside.com/mini/vsoop  ", CollectionMode: " comments "})
 	if err != nil {
 		t.Fatalf("ScrapeDCGallery returned error: %v", err)
 	}
@@ -65,6 +68,11 @@ func TestAppScrapeDCGalleryValidation(t *testing.T) {
 			name:    "date range reversed",
 			request: ScrapeRequest{URL: "https://gall.dcinside.com/mini/vsoop", StartDate: "2026-07-03", EndDate: "2026-07-01"},
 			want:    "start date must be earlier than or equal to end date",
+		},
+		{
+			name:    "invalid collection mode",
+			request: ScrapeRequest{URL: "https://gall.dcinside.com/mini/vsoop", CollectionMode: "bad"},
+			want:    "invalid collection mode",
 		},
 	}
 

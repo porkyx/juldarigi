@@ -65,6 +65,7 @@ func (a *App) ScrapeDCGallery(request ScrapeRequest) (*ScrapeResult, error) {
 	request.URL = strings.TrimSpace(request.URL)
 	request.StartDate = strings.TrimSpace(request.StartDate)
 	request.EndDate = strings.TrimSpace(request.EndDate)
+	request.CollectionMode = strings.TrimSpace(request.CollectionMode)
 
 	if request.URL == "" {
 		return nil, errors.New("URL is required")

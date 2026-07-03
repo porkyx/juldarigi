@@ -79,6 +79,16 @@ describe('renderCapturePNG', () => {
               postTitle: '캡처 대상 글',
               postUrl: 'https://gall.dcinside.com/mini/board/view/?id=spv&no=649328',
             }),
+            new main.MetricRank({
+              rank: 2,
+              uid: 'uid-2',
+              nickname: 'Nick 2',
+              ip: '',
+              value: 432,
+              postNumber: '650222',
+              postTitle: '긴 제목도 같은 여백으로 정렬됩니다',
+              postUrl: 'https://gall.dcinside.com/mini/board/view/?id=spv&no=650222',
+            }),
           ],
         },
         {
@@ -91,16 +101,34 @@ describe('renderCapturePNG', () => {
 
       const renderedTexts = harness.fillTextCalls.map((call) => call.text);
       expect(dataUrl).toBe('data:image/png;base64,test');
-      expect(harness.canvas.width).toBe(2880);
+      expect(harness.canvas.width).toBe(1440);
+      expect(harness.canvas.style.width).toBe('720px');
       expect(harness.canvas.height).toBeGreaterThan(0);
       expect(harness.context.scale).toHaveBeenCalledWith(2, 2);
       expect(renderedTexts).toContain('갤창랭킹 수집 결과');
       expect(renderedTexts).toContain('게시글 수 랭킹 1 ~ 100위');
       expect(renderedTexts).toContain('649328번 · 캡처 대상 글');
       expect(renderedTexts).toContain('https://gall.dcinside.com/mini/board/view/?id=spv&no=649328');
+      expect(renderedTexts).toContain('650222번 · 긴 제목도 같은 여백으로 정렬됩니다');
+      expect(renderedTexts).toContain('원본 URL');
+      expect(renderedTexts).toContain('#100');
+      expect(renderedTexts).toContain('게시글 수');
       expect(renderedTexts).toContain('데이터 없음');
       expect(renderedTexts).toContain('Nick 100');
       expect(renderedTexts).not.toContain('Nick 101');
+      expect(harness.fillTextCalls.some((call) => call.text === '갤창랭킹 수집 결과' && call.font.startsWith('800 42px'))).toBe(
+        true,
+      );
+      expect(harness.fillTextCalls.some((call) => call.text === 'Nick 100' && call.font.startsWith('800 26px'))).toBe(true);
+      const metricUrlLabels = harness.fillTextCalls.filter((call) => call.text === '원본 URL');
+      expect(metricUrlLabels).toHaveLength(2);
+      expect(metricUrlLabels[1].x).toBe(metricUrlLabels[0].x);
+      expect(metricUrlLabels[1].y - metricUrlLabels[0].y).toBe(166);
+      const metricNames = harness.fillTextCalls.filter(
+        (call) => (call.text === 'Nick 1' || call.text === 'Nick 2') && call.font.startsWith('800 25px'),
+      );
+      expect(metricNames.map((call) => call.x)).toEqual([metricNames[0].x, metricNames[0].x]);
+      expect(metricNames[1].y - metricNames[0].y).toBe(166);
     } finally {
       vi.stubGlobal('document', previousDocument);
       vi.stubGlobal('window', previousWindow);
@@ -147,7 +175,7 @@ describe('renderCapturePNG', () => {
 });
 
 function createCanvasHarness() {
-  const fillTextCalls: Array<{ text: string; x: number; y: number }> = [];
+  const fillTextCalls: Array<{ text: string; x: number; y: number; font: string }> = [];
   const context = {
     font: '',
     fillStyle: '',
@@ -158,7 +186,7 @@ function createCanvasHarness() {
     fill: vi.fn(),
     fillRect: vi.fn(),
     fillText: vi.fn((text: string, x: number, y: number) => {
-      fillTextCalls.push({ text, x, y });
+      fillTextCalls.push({ text, x, y, font: context.font });
     }),
     lineTo: vi.fn(),
     measureText: (text: string) => ({ width: text.length * 4 }) as TextMetrics,

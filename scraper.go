@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,38 +19,47 @@ const (
 	defaultPages             = 1
 	defaultMaxRetries        = 5
 	defaultMaxDateRangePages = 10000
+	defaultMaxCommentPages   = 1000
+	collectionModePosts      = "posts"
+	collectionModeAll        = "posts_comments"
+	collectionModeComments   = "comments"
 )
 
 type EventEmitter func(eventName string, payload interface{})
 type retryWaiter func(ctx context.Context, attempt int, maxAttempts int) error
 
 type ScrapeRequest struct {
-	URL       string `json:"url"`
-	Pages     int    `json:"pages"`
-	StartDate string `json:"startDate"`
-	EndDate   string `json:"endDate"`
+	URL            string `json:"url"`
+	Pages          int    `json:"pages"`
+	StartDate      string `json:"startDate"`
+	EndDate        string `json:"endDate"`
+	CollectionMode string `json:"collectionMode"`
 }
 
 type ScrapeResult struct {
-	Success      bool           `json:"success"`
-	Type         string         `json:"type"`
-	GalleryID    string         `json:"galleryId"`
-	GalleryType  string         `json:"galleryType"`
-	URL          string         `json:"url"`
-	PagesScraped int            `json:"pagesScraped"`
-	StartDate    *string        `json:"startDate"`
-	EndDate      *string        `json:"endDate"`
-	TotalPosts   int            `json:"totalPosts"`
-	UniqueUsers  int            `json:"uniqueUsers"`
-	UserStats    []UserStat     `json:"userStats"`
-	TopMetrics   MetricRankings `json:"topMetrics"`
+	Success        bool           `json:"success"`
+	Type           string         `json:"type"`
+	GalleryID      string         `json:"galleryId"`
+	GalleryType    string         `json:"galleryType"`
+	URL            string         `json:"url"`
+	PagesScraped   int            `json:"pagesScraped"`
+	StartDate      *string        `json:"startDate"`
+	EndDate        *string        `json:"endDate"`
+	CollectionMode string         `json:"collectionMode"`
+	TotalPosts     int            `json:"totalPosts"`
+	TotalComments  int            `json:"totalComments"`
+	UniqueUsers    int            `json:"uniqueUsers"`
+	UserStats      []UserStat     `json:"userStats"`
+	TopMetrics     MetricRankings `json:"topMetrics"`
 }
 
 type UserStat struct {
-	UID      string `json:"uid"`
-	Nickname string `json:"nickname"`
-	IP       string `json:"ip"`
-	Count    int    `json:"count"`
+	UID          string `json:"uid"`
+	Nickname     string `json:"nickname"`
+	IP           string `json:"ip"`
+	Count        int    `json:"count"`
+	PostCount    int    `json:"postCount"`
+	CommentCount int    `json:"commentCount"`
 }
 
 type MetricRankings struct {
@@ -70,11 +80,12 @@ type MetricRank struct {
 }
 
 type ProgressInfo struct {
-	CurrentPage int    `json:"currentPage"`
-	TotalPages  int    `json:"totalPages,omitempty"`
-	TotalPosts  int    `json:"totalPosts"`
-	UniqueUsers int    `json:"uniqueUsers"`
-	Message     string `json:"message"`
+	CurrentPage   int    `json:"currentPage"`
+	TotalPages    int    `json:"totalPages,omitempty"`
+	TotalPosts    int    `json:"totalPosts"`
+	TotalComments int    `json:"totalComments"`
+	UniqueUsers   int    `json:"uniqueUsers"`
+	Message       string `json:"message"`
 }
 
 type MessagePayload struct {
@@ -103,9 +114,31 @@ type Post struct {
 	HasCommentCount   bool
 }
 
+type Comment struct {
+	UID        string
+	Nickname   string
+	IP         string
+	PostNumber string
+	PostTitle  string
+	PostURL    string
+}
+
+type commentResponse struct {
+	TotalCount int              `json:"total_cnt"`
+	Comments   []commentPayload `json:"comments"`
+}
+
+type commentPayload struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+	IP     string `json:"ip"`
+	DelYN  string `json:"del_yn"`
+}
+
 type datePageData struct {
 	Posts          []Post
 	FoundOlderDate bool
+	FoundNewerDate bool
 }
 
 type scrapeTotals struct {
@@ -114,7 +147,9 @@ type scrapeTotals struct {
 	UserTopRecommendations map[string]MetricRank
 	UserTopComments        map[string]MetricRank
 	TotalPosts             int
+	TotalComments          int
 	PagesScraped           int
+	CollectionMode         string
 }
 
 type Scraper struct {
@@ -143,6 +178,10 @@ func (s *Scraper) Scrape(ctx context.Context, request ScrapeRequest, emit EventE
 	if ctx == nil {
 		return nil, errors.New("context is required")
 	}
+	collectionMode, err := normalizeCollectionMode(request.CollectionMode)
+	if err != nil {
+		return nil, err
+	}
 
 	galleryInfo, err := ParseGalleryURL(request.URL)
 	if err != nil {
@@ -151,21 +190,35 @@ func (s *Scraper) Scrape(ctx context.Context, request ScrapeRequest, emit EventE
 
 	var totals scrapeTotals
 	if request.StartDate != "" || request.EndDate != "" {
-		totals, err = s.scrapeDateRange(ctx, galleryInfo, request.StartDate, request.EndDate, emit)
+		totals, err = s.scrapeDateRange(ctx, galleryInfo, request.StartDate, request.EndDate, collectionMode, emit)
 	} else {
 		pages := request.Pages
 		if pages < 1 {
 			pages = defaultPages
 		}
-		totals, err = s.scrapePages(ctx, galleryInfo, pages, emit)
+		totals, err = s.scrapePages(ctx, galleryInfo, pages, collectionMode, emit)
 	}
 	if err != nil {
 		return nil, err
 	}
+	totals.CollectionMode = collectionMode
 
 	result := formatScrapeResult(galleryInfo, totals, request.StartDate, request.EndDate)
 	emitEvent(emit, "complete", result)
 	return result, nil
+}
+
+func normalizeCollectionMode(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "", collectionModePosts:
+		return collectionModePosts, nil
+	case collectionModeAll:
+		return collectionModeAll, nil
+	case collectionModeComments:
+		return collectionModeComments, nil
+	default:
+		return "", fmt.Errorf("invalid collection mode: %s", value)
+	}
 }
 
 func ParseGalleryURL(rawURL string) (GalleryInfo, error) {
@@ -247,8 +300,9 @@ func galleryInfoFromID(originalURL, galleryID, galleryType string) (GalleryInfo,
 	}, nil
 }
 
-func (s *Scraper) scrapePages(ctx context.Context, galleryInfo GalleryInfo, pages int, emit EventEmitter) (scrapeTotals, error) {
+func (s *Scraper) scrapePages(ctx context.Context, galleryInfo GalleryInfo, pages int, collectionMode string, emit EventEmitter) (scrapeTotals, error) {
 	totals := newScrapeTotals()
+	totals.CollectionMode = collectionMode
 	emitEvent(emit, "info", MessagePayload{Message: fmt.Sprintf("Starting page-based scraping for %d pages", pages)})
 
 	for pageNumber := 1; pageNumber <= pages; pageNumber++ {
@@ -257,11 +311,12 @@ func (s *Scraper) scrapePages(ctx context.Context, galleryInfo GalleryInfo, page
 		}
 
 		emitEvent(emit, "progress", ProgressInfo{
-			CurrentPage: pageNumber,
-			TotalPages:  pages,
-			TotalPosts:  totals.TotalPosts,
-			UniqueUsers: len(totals.UserPostCount),
-			Message:     fmt.Sprintf("Scraping page %d of %d...", pageNumber, pages),
+			CurrentPage:   pageNumber,
+			TotalPages:    pages,
+			TotalPosts:    totals.TotalPosts,
+			TotalComments: totals.TotalComments,
+			UniqueUsers:   len(totals.UserPostCount),
+			Message:       fmt.Sprintf("Scraping page %d of %d...", pageNumber, pages),
 		})
 
 		pageURL := BuildPageURL(galleryInfo, pageNumber)
@@ -274,23 +329,40 @@ func (s *Scraper) scrapePages(ctx context.Context, galleryInfo GalleryInfo, page
 			posts = nil
 		}
 
-		addPostsToTotals(&totals, posts)
+		if shouldCollectPosts(collectionMode) {
+			addPostsToTotals(&totals, posts)
+		}
+		pageComments := []Comment{}
+		if shouldCollectComments(collectionMode) {
+			comments, err := s.scrapeCommentsForPosts(ctx, galleryInfo, posts)
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return scrapeTotals{}, ctxErr
+				}
+				emitEvent(emit, "warning", MessagePayload{Message: fmt.Sprintf("Skipping comments on page %d due to errors: %s", pageNumber, err.Error())})
+			} else {
+				pageComments = comments
+				addCommentsToTotals(&totals, comments)
+			}
+		}
 		totals.PagesScraped = pageNumber
 
 		emitEvent(emit, "progress", ProgressInfo{
-			CurrentPage: pageNumber,
-			TotalPages:  pages,
-			TotalPosts:  totals.TotalPosts,
-			UniqueUsers: len(totals.UserPostCount),
-			Message:     fmt.Sprintf("Page %d completed: %d posts found", pageNumber, len(posts)),
+			CurrentPage:   pageNumber,
+			TotalPages:    pages,
+			TotalPosts:    totals.TotalPosts,
+			TotalComments: totals.TotalComments,
+			UniqueUsers:   len(totals.UserPostCount),
+			Message:       fmt.Sprintf("Page %d completed: %d posts and %d comments found", pageNumber, len(posts), len(pageComments)),
 		})
 	}
 
 	return totals, nil
 }
 
-func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, startDate, endDate string, emit EventEmitter) (scrapeTotals, error) {
+func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, startDate, endDate, collectionMode string, emit EventEmitter) (scrapeTotals, error) {
 	totals := newScrapeTotals()
+	totals.CollectionMode = collectionMode
 	emitEvent(emit, "info", MessagePayload{Message: fmt.Sprintf("Starting date range scraping from %s to %s", displayDateBoundary(startDate, "beginning"), displayDateBoundary(endDate, "latest"))})
 
 	pageLimit := s.dateRangePageLimit()
@@ -300,10 +372,11 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 		}
 
 		emitEvent(emit, "progress", ProgressInfo{
-			CurrentPage: pageNumber,
-			TotalPosts:  totals.TotalPosts,
-			UniqueUsers: len(totals.UserPostCount),
-			Message:     fmt.Sprintf("Scraping page %d...", pageNumber),
+			CurrentPage:   pageNumber,
+			TotalPosts:    totals.TotalPosts,
+			TotalComments: totals.TotalComments,
+			UniqueUsers:   len(totals.UserPostCount),
+			Message:       fmt.Sprintf("Scraping page %d...", pageNumber),
 		})
 
 		pageURL := BuildPageURL(galleryInfo, pageNumber)
@@ -317,17 +390,33 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 			continue
 		}
 
-		addPostsToTotals(&totals, pageData.Posts)
+		if shouldCollectPosts(collectionMode) {
+			addPostsToTotals(&totals, pageData.Posts)
+		}
+		pageComments := []Comment{}
+		if shouldCollectComments(collectionMode) {
+			comments, err := s.scrapeCommentsForPosts(ctx, galleryInfo, pageData.Posts)
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return scrapeTotals{}, ctxErr
+				}
+				emitEvent(emit, "warning", MessagePayload{Message: fmt.Sprintf("Skipping comments on page %d due to errors: %s", pageNumber, err.Error())})
+			} else {
+				pageComments = comments
+				addCommentsToTotals(&totals, comments)
+			}
+		}
 		totals.PagesScraped = pageNumber
 
 		emitEvent(emit, "progress", ProgressInfo{
-			CurrentPage: pageNumber,
-			TotalPosts:  totals.TotalPosts,
-			UniqueUsers: len(totals.UserPostCount),
-			Message:     fmt.Sprintf("Page %d completed: %d posts found", pageNumber, len(pageData.Posts)),
+			CurrentPage:   pageNumber,
+			TotalPosts:    totals.TotalPosts,
+			TotalComments: totals.TotalComments,
+			UniqueUsers:   len(totals.UserPostCount),
+			Message:       fmt.Sprintf("Page %d completed: %d posts and %d comments found", pageNumber, len(pageData.Posts), len(pageComments)),
 		})
 
-		if startDate != "" && pageData.FoundOlderDate && len(pageData.Posts) == 0 {
+		if startDate != "" && pageData.FoundOlderDate && !pageData.FoundNewerDate {
 			emitEvent(emit, "info", MessagePayload{Message: "Found posts older than target date, stopping..."})
 			return totals, nil
 		}
@@ -338,6 +427,14 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 	}
 
 	return scrapeTotals{}, fmt.Errorf("date range scraping stopped after safety limit of %d pages", pageLimit)
+}
+
+func shouldCollectPosts(collectionMode string) bool {
+	return collectionMode == collectionModePosts || collectionMode == collectionModeAll
+}
+
+func shouldCollectComments(collectionMode string) bool {
+	return collectionMode == collectionModeComments || collectionMode == collectionModeAll
 }
 
 func (s *Scraper) scrapePostsWithRetry(ctx context.Context, pageURL string) ([]Post, error) {
@@ -370,6 +467,130 @@ func (s *Scraper) scrapeDatePageWithRetry(ctx context.Context, pageURL, startDat
 		}
 	}
 	return datePageData{}, lastErr
+}
+
+func (s *Scraper) scrapeCommentsForPosts(ctx context.Context, galleryInfo GalleryInfo, posts []Post) ([]Comment, error) {
+	comments := make([]Comment, 0)
+	for _, post := range posts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !post.HasCommentCount || post.CommentCount < 1 || strings.TrimSpace(post.URL) == "" || strings.TrimSpace(post.Number) == "" {
+			continue
+		}
+		postComments, err := s.scrapeCommentsWithRetry(ctx, galleryInfo, post)
+		if err != nil {
+			return nil, err
+		}
+		comments = append(comments, postComments...)
+	}
+	return comments, nil
+}
+
+func (s *Scraper) scrapeCommentsWithRetry(ctx context.Context, galleryInfo GalleryInfo, post Post) ([]Comment, error) {
+	var lastErr error
+	retryLimit := s.retryLimit()
+	for attempt := 1; attempt <= retryLimit; attempt++ {
+		comments, err := s.scrapeComments(ctx, galleryInfo, post)
+		if err == nil {
+			return comments, nil
+		}
+		lastErr = err
+		if err := s.wait(ctx, attempt, retryLimit); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func (s *Scraper) scrapeComments(ctx context.Context, galleryInfo GalleryInfo, post Post) ([]Comment, error) {
+	doc, err := s.fetchDocument(ctx, post.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	secretKey := strings.TrimSpace(selectionAttr(doc.Find("#secret_article_key").First(), "value"))
+	commentKey := strings.TrimSpace(selectionAttr(doc.Find("#e_s_n_o").First(), "value"))
+	if commentKey == "" {
+		return nil, errors.New("comment key is missing")
+	}
+
+	gallType := strings.TrimSpace(selectionAttr(doc.Find("#_GALLTYPE_").First(), "value"))
+	if gallType == "" {
+		gallType = dcGalleryTypeCode(galleryInfo.GalleryType)
+	}
+
+	comments := make([]Comment, 0, post.CommentCount)
+	rawCount := 0
+	for page := 1; page <= defaultMaxCommentPages; page++ {
+		response, err := s.fetchCommentPage(ctx, galleryInfo, post, commentKey, gallType, secretKey, page, rawCount)
+		if err != nil {
+			return nil, err
+		}
+		if len(response.Comments) == 0 {
+			return comments, nil
+		}
+		rawCount += len(response.Comments)
+		comments = append(comments, commentsFromPayloads(response.Comments, post)...)
+		if response.TotalCount <= 0 || rawCount >= response.TotalCount {
+			return comments, nil
+		}
+	}
+	return nil, fmt.Errorf("comment scraping stopped after safety limit of %d pages", defaultMaxCommentPages)
+}
+
+func (s *Scraper) fetchCommentPage(ctx context.Context, galleryInfo GalleryInfo, post Post, commentKey, gallType, secretKey string, page int, previousCount int) (commentResponse, error) {
+	form := url.Values{}
+	form.Set("id", galleryInfo.GalleryID)
+	form.Set("no", post.Number)
+	form.Set("cmt_id", galleryInfo.GalleryID)
+	form.Set("cmt_no", post.Number)
+	form.Set("focus_cno", "")
+	form.Set("focus_pno", "")
+	form.Set("e_s_n_o", commentKey)
+	form.Set("comment_page", strconv.Itoa(page))
+	form.Set("sort", "D")
+	form.Set("prevCnt", strconv.Itoa(previousCount))
+	form.Set("board_type", "")
+	form.Set("_GALLTYPE_", gallType)
+	form.Set("secret_article_key", secretKey)
+	form.Set("clean", "")
+	form.Set("nptest", "")
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://gall.dcinside.com/board/comment/", strings.NewReader(form.Encode()))
+	if err != nil {
+		return commentResponse{}, err
+	}
+	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36")
+	request.Header.Set("Accept-Language", "ko-KR,ko;q=0.9,en;q=0.8")
+	request.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	request.Header.Set("X-Requested-With", "XMLHttpRequest")
+	request.Header.Set("Referer", post.URL)
+
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	httpResponse, err := client.Do(request)
+	if err != nil {
+		return commentResponse{}, err
+	}
+	defer httpResponse.Body.Close()
+
+	if httpResponse.StatusCode >= 500 {
+		return commentResponse{}, fmt.Errorf("comment server error: %d", httpResponse.StatusCode)
+	}
+	if httpResponse.StatusCode >= 400 {
+		return commentResponse{}, fmt.Errorf("comment request failed: %d", httpResponse.StatusCode)
+	}
+
+	var payload commentResponse
+	if err := json.NewDecoder(httpResponse.Body).Decode(&payload); err != nil {
+		return commentResponse{}, fmt.Errorf("decode comments: %w", err)
+	}
+	return payload, nil
 }
 
 func (s *Scraper) fetchDocument(ctx context.Context, pageURL string) (*goquery.Document, error) {
@@ -436,6 +657,7 @@ func extractPostsWithDateRange(doc *goquery.Document, startDate, endDate string,
 			return
 		}
 		if endDate != "" && normalizedDate > endDate {
+			data.FoundNewerDate = true
 			return
 		}
 
@@ -668,7 +890,26 @@ func aggregateUserPosts(posts []Post) map[string]UserStat {
 			}
 		}
 		user.Count++
+		user.PostCount++
 		counts[post.UID] = user
+	}
+	return counts
+}
+
+func aggregateUserComments(comments []Comment) map[string]UserStat {
+	counts := make(map[string]UserStat)
+	for _, comment := range comments {
+		user := counts[comment.UID]
+		if user.UID == "" {
+			user = UserStat{
+				UID:      comment.UID,
+				Nickname: comment.Nickname,
+				IP:       comment.IP,
+			}
+		}
+		user.Count++
+		user.CommentCount++
+		counts[comment.UID] = user
 	}
 	return counts
 }
@@ -700,6 +941,15 @@ func addPostsToTotals(totals *scrapeTotals, posts []Post) {
 	totals.TotalPosts += len(posts)
 }
 
+func addCommentsToTotals(totals *scrapeTotals, comments []Comment) {
+	if totals == nil {
+		return
+	}
+	ensureTotalsMaps(totals)
+	mergeUserCounts(totals.UserPostCount, aggregateUserComments(comments))
+	totals.TotalComments += len(comments)
+}
+
 func ensureTotalsMaps(totals *scrapeTotals) {
 	if totals.UserPostCount == nil {
 		totals.UserPostCount = map[string]UserStat{}
@@ -723,7 +973,46 @@ func mergeUserCounts(target map[string]UserStat, source map[string]UserStat) {
 			continue
 		}
 		targetUser.Count += sourceUser.Count
+		targetUser.PostCount += sourceUser.PostCount
+		targetUser.CommentCount += sourceUser.CommentCount
 		target[uid] = targetUser
+	}
+}
+
+func commentsFromPayloads(payloads []commentPayload, post Post) []Comment {
+	comments := make([]Comment, 0, len(payloads))
+	for _, payload := range payloads {
+		if payload.DelYN == "Y" {
+			continue
+		}
+		uid := strings.TrimSpace(payload.UserID)
+		if uid == "" {
+			continue
+		}
+		nickname := strings.TrimSpace(payload.Name)
+		if nickname == "" {
+			nickname = "Unknown"
+		}
+		comments = append(comments, Comment{
+			UID:        uid,
+			Nickname:   nickname,
+			IP:         strings.TrimSpace(payload.IP),
+			PostNumber: post.Number,
+			PostTitle:  post.Title,
+			PostURL:    post.URL,
+		})
+	}
+	return comments
+}
+
+func dcGalleryTypeCode(galleryType string) string {
+	switch galleryType {
+	case "mini":
+		return "MI"
+	case "mgallery":
+		return "M"
+	default:
+		return "G"
 	}
 }
 
@@ -807,18 +1096,24 @@ func topMetricRanks(userMetricBests map[string]MetricRank, limit int) []MetricRa
 
 func formatScrapeResult(galleryInfo GalleryInfo, totals scrapeTotals, startDate, endDate string) *ScrapeResult {
 	userStats := sortUserStats(totals.UserPostCount)
+	collectionMode := totals.CollectionMode
+	if collectionMode == "" {
+		collectionMode = collectionModePosts
+	}
 	return &ScrapeResult{
-		Success:      true,
-		Type:         "dcgallery",
-		GalleryID:    galleryInfo.GalleryID,
-		GalleryType:  galleryInfo.GalleryType,
-		URL:          galleryInfo.OriginalURL,
-		PagesScraped: totals.PagesScraped,
-		StartDate:    optionalString(startDate),
-		EndDate:      optionalString(endDate),
-		TotalPosts:   totals.TotalPosts,
-		UniqueUsers:  len(userStats),
-		UserStats:    userStats,
+		Success:        true,
+		Type:           "dcgallery",
+		GalleryID:      galleryInfo.GalleryID,
+		GalleryType:    galleryInfo.GalleryType,
+		URL:            galleryInfo.OriginalURL,
+		PagesScraped:   totals.PagesScraped,
+		StartDate:      optionalString(startDate),
+		EndDate:        optionalString(endDate),
+		CollectionMode: collectionMode,
+		TotalPosts:     totals.TotalPosts,
+		TotalComments:  totals.TotalComments,
+		UniqueUsers:    len(userStats),
+		UserStats:      userStats,
 		TopMetrics: MetricRankings{
 			Views:           topMetricRanks(totals.UserTopViews, 3),
 			Recommendations: topMetricRanks(totals.UserTopRecommendations, 3),

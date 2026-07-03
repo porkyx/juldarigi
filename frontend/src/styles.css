@@ -144,6 +144,40 @@ input:focus {
   gap: 10px;
 }
 
+.collection-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.checkbox-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 11px;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #d7dde8;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.checkbox-option input {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  accent-color: #2563eb;
+}
+
+.checkbox-option:has(input:checked) {
+  color: #0f172a;
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
 .primary-action,
 .icon-button,
 .table-actions button {
@@ -391,7 +425,7 @@ dd {
 
 table {
   width: 100%;
-  min-width: 720px;
+  min-width: 860px;
   border-collapse: collapse;
   font-size: 14px;
 }

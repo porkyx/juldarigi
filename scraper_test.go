@@ -258,6 +258,40 @@ func TestParseMetricText(t *testing.T) {
 	}
 }
 
+func TestNormalizeCollectionMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty defaults to posts", input: "", want: collectionModePosts},
+		{name: "trimmed posts", input: " posts ", want: collectionModePosts},
+		{name: "all", input: collectionModeAll, want: collectionModeAll},
+		{name: "comments", input: collectionModeComments, want: collectionModeComments},
+		{name: "invalid", input: "bad", wantErr: true},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := normalizeCollectionMode(test.input)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("normalizeCollectionMode succeeded, want error")
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("normalizeCollectionMode(%q) = %q, %v; want %q", test.input, got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestEnrichPostFromRowHandlesMissingOptionalFields(t *testing.T) {
 	t.Parallel()
 
@@ -351,6 +385,9 @@ func TestExtractPostsWithDateRange(t *testing.T) {
 	if !data.FoundOlderDate {
 		t.Fatal("FoundOlderDate = false, want true")
 	}
+	if !data.FoundNewerDate {
+		t.Fatal("FoundNewerDate = false, want true")
+	}
 }
 
 func TestExtractPostsWithDateRangeSkipsMalformedAndOutOfRangeRows(t *testing.T) {
@@ -378,6 +415,9 @@ func TestExtractPostsWithDateRangeSkipsMalformedAndOutOfRangeRows(t *testing.T) 
 	if data.FoundOlderDate {
 		t.Fatal("FoundOlderDate = true, want false")
 	}
+	if !data.FoundNewerDate {
+		t.Fatal("FoundNewerDate = false, want true")
+	}
 }
 
 func TestAggregateAndSortUserStats(t *testing.T) {
@@ -400,8 +440,65 @@ func TestAggregateAndSortUserStats(t *testing.T) {
 	if users[0].UID != "u2" || users[0].Count != 2 {
 		t.Fatalf("top user = %+v, want u2 count 2", users[0])
 	}
+	if users[0].PostCount != 2 {
+		t.Fatalf("top user PostCount = %d, want 2", users[0].PostCount)
+	}
 	if users[1].UID != "u3" || users[2].UID != "u4" || users[3].UID != "u1" {
 		t.Fatalf("tie order = %+v, want nickname then UID ascending", users[1:])
+	}
+}
+
+func TestCommentsFromPayloadsAndAggregateUserComments(t *testing.T) {
+	t.Parallel()
+
+	post := Post{Number: "10", Title: "Target", URL: "https://gall.dcinside.com/mini/board/view/?id=spv&no=10"}
+	comments := commentsFromPayloads([]commentPayload{
+		{UserID: "u1", Name: "Alice", IP: "1.1", DelYN: "N"},
+		{UserID: "deleted", Name: "Deleted", DelYN: "Y"},
+		{UserID: "", Name: "No UID", DelYN: "N"},
+		{UserID: "u1", Name: "Alice", IP: "1.1", DelYN: "N"},
+		{UserID: "u2", DelYN: "N"},
+	}, post)
+	if len(comments) != 3 {
+		t.Fatalf("len(comments) = %d, want 3", len(comments))
+	}
+	if comments[0].PostNumber != "10" || comments[0].PostTitle != "Target" || comments[2].Nickname != "Unknown" {
+		t.Fatalf("comment projection = %+v", comments)
+	}
+
+	counts := aggregateUserComments(comments)
+	if counts["u1"].Count != 2 || counts["u1"].CommentCount != 2 || counts["u1"].PostCount != 0 {
+		t.Fatalf("u1 comment counts = %+v, want count/comment 2 and post 0", counts["u1"])
+	}
+	if counts["u2"].Count != 1 || counts["u2"].Nickname != "Unknown" {
+		t.Fatalf("u2 comment counts = %+v, want unknown nickname count 1", counts["u2"])
+	}
+
+	addCommentsToTotals(nil, comments)
+	var totals scrapeTotals
+	addCommentsToTotals(&totals, comments)
+	if totals.TotalComments != 3 || totals.UserPostCount["u1"].CommentCount != 2 || totals.UserPostCount["u2"].CommentCount != 1 {
+		t.Fatalf("comment totals = %+v, want total 3 and per-user counts", totals)
+	}
+}
+
+func TestDCGalleryTypeCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		galleryType string
+		want        string
+	}{
+		{galleryType: "mini", want: "MI"},
+		{galleryType: "mgallery", want: "M"},
+		{galleryType: "board", want: "G"},
+		{galleryType: "", want: "G"},
+	}
+
+	for _, test := range tests {
+		if got := dcGalleryTypeCode(test.galleryType); got != test.want {
+			t.Fatalf("dcGalleryTypeCode(%q) = %q, want %q", test.galleryType, got, test.want)
+		}
 	}
 }
 
@@ -409,16 +506,16 @@ func TestMergeUserCountsAndFormatResult(t *testing.T) {
 	t.Parallel()
 
 	target := map[string]UserStat{
-		"u1": {UID: "u1", Nickname: "Alice", Count: 2},
+		"u1": {UID: "u1", Nickname: "Alice", Count: 2, PostCount: 2},
 	}
 	source := map[string]UserStat{
-		"u1": {UID: "u1", Nickname: "Alice", Count: 3},
-		"u2": {UID: "u2", Nickname: "Bob", IP: "(1.2)", Count: 1},
+		"u1": {UID: "u1", Nickname: "Alice", Count: 3, CommentCount: 3},
+		"u2": {UID: "u2", Nickname: "Bob", IP: "(1.2)", Count: 1, CommentCount: 1},
 	}
 
 	mergeUserCounts(target, source)
-	if target["u1"].Count != 5 {
-		t.Fatalf("merged count = %d, want 5", target["u1"].Count)
+	if target["u1"].Count != 5 || target["u1"].PostCount != 2 || target["u1"].CommentCount != 3 {
+		t.Fatalf("merged u1 = %+v, want count 5 post 2 comment 3", target["u1"])
 	}
 	if target["u2"].IP != "(1.2)" {
 		t.Fatalf("new user IP = %q, want (1.2)", target["u2"].IP)
@@ -426,7 +523,7 @@ func TestMergeUserCountsAndFormatResult(t *testing.T) {
 
 	result := formatScrapeResult(
 		GalleryInfo{GalleryID: "vsoop", GalleryType: "mini", OriginalURL: "https://gall.dcinside.com/mini/vsoop"},
-		scrapeTotals{UserPostCount: target, TotalPosts: 6, PagesScraped: 2},
+		scrapeTotals{UserPostCount: target, TotalPosts: 2, TotalComments: 4, PagesScraped: 2, CollectionMode: collectionModeAll},
 		"2026-07-01",
 		"",
 	)
@@ -438,6 +535,9 @@ func TestMergeUserCountsAndFormatResult(t *testing.T) {
 	}
 	if result.EndDate != nil {
 		t.Fatalf("EndDate = %v, want nil", result.EndDate)
+	}
+	if result.CollectionMode != collectionModeAll || result.TotalComments != 4 {
+		t.Fatalf("collection summary = %q/%d, want all/4", result.CollectionMode, result.TotalComments)
 	}
 	if len(result.TopMetrics.Views) != 0 || len(result.TopMetrics.Recommendations) != 0 || len(result.TopMetrics.Comments) != 0 {
 		t.Fatalf("empty metric maps produced top metrics: %+v", result.TopMetrics)
@@ -550,6 +650,9 @@ func TestAddPostsToTotalsHandlesNilAndIncompleteMetricPosts(t *testing.T) {
 	if totals.UserPostCount["u1"].Count != 2 || totals.UserPostCount["u2"].Count != 1 {
 		t.Fatalf("post counts = %+v, want u1=2 and u2=1", totals.UserPostCount)
 	}
+	if totals.UserPostCount["u1"].PostCount != 2 || totals.UserPostCount["u1"].CommentCount != 0 {
+		t.Fatalf("u1 breakdown = %+v, want post 2 comment 0", totals.UserPostCount["u1"])
+	}
 }
 
 func TestWaitBeforeRetry(t *testing.T) {
@@ -609,6 +712,232 @@ func TestScrapePagesAggregatesAndEmitsProgress(t *testing.T) {
 		t.Fatalf("top user = %+v, want u1 count 2", result.UserStats[0])
 	}
 	recorder.requireEvents(t, "info", "progress", "progress", "progress", "progress", "complete")
+}
+
+func TestScrapePagesCollectsPostsAndCommentsByMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		mode             string
+		wantPosts        int
+		wantComments     int
+		wantUsers        int
+		wantTopUID       string
+		wantTopCount     int
+		wantPostCount    int
+		wantCommentCount int
+		wantTopMetrics   bool
+	}{
+		{
+			name:             "posts and comments",
+			mode:             collectionModeAll,
+			wantPosts:        2,
+			wantComments:     2,
+			wantUsers:        3,
+			wantTopUID:       "commenter",
+			wantTopCount:     2,
+			wantPostCount:    0,
+			wantCommentCount: 2,
+			wantTopMetrics:   true,
+		},
+		{
+			name:             "comments only",
+			mode:             collectionModeComments,
+			wantPosts:        0,
+			wantComments:     2,
+			wantUsers:        1,
+			wantTopUID:       "commenter",
+			wantTopCount:     2,
+			wantPostCount:    0,
+			wantCommentCount: 2,
+			wantTopMetrics:   false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			commentRequests := 0
+			scraper := newTestScraper(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/mini/board/lists/":
+					return htmlResponse(http.StatusOK, galleryHTML(
+						metricPostRow("10", "author1", "Alice", "", "First", "https://gall.dcinside.com/mini/board/view/?id=spv&no=10&page=1", "10", "2", "[3]")+
+							metricPostRow("11", "author2", "Bob", "", "Second", "https://gall.dcinside.com/mini/board/view/?id=spv&no=11&page=1", "4", "1", ""),
+					)), nil
+				case "/mini/board/view/":
+					if req.URL.Query().Get("no") != "10" {
+						t.Fatalf("unexpected view URL: %s", req.URL.String())
+					}
+					return htmlResponse(http.StatusOK, commentViewHTML("comment-key", "MI", "")), nil
+				case "/board/comment/":
+					commentRequests++
+					if req.Method != http.MethodPost {
+						t.Fatalf("comment method = %s, want POST", req.Method)
+					}
+					if err := req.ParseForm(); err != nil {
+						t.Fatalf("ParseForm returned error: %v", err)
+					}
+					if req.Form.Get("id") != "spv" || req.Form.Get("no") != "10" || req.Form.Get("e_s_n_o") != "comment-key" || req.Form.Get("_GALLTYPE_") != "MI" {
+						t.Fatalf("comment form = %v", req.Form)
+					}
+					return jsonResponse(http.StatusOK, `{"total_cnt":3,"comments":[{"user_id":"commenter","name":"Carol","ip":"","del_yn":"N"},{"user_id":"deleted","name":"Deleted","ip":"","del_yn":"Y"},{"user_id":"commenter","name":"Carol","ip":"","del_yn":"N"}]}`), nil
+				default:
+					t.Fatalf("unexpected request: %s", req.URL.String())
+					return nil, nil
+				}
+			})
+
+			result, err := scraper.Scrape(context.Background(), ScrapeRequest{
+				URL:            "https://gall.dcinside.com/mini/spv",
+				Pages:          1,
+				CollectionMode: test.mode,
+			}, nil)
+			if err != nil {
+				t.Fatalf("Scrape returned error: %v", err)
+			}
+			if commentRequests != 1 {
+				t.Fatalf("commentRequests = %d, want 1", commentRequests)
+			}
+			if result.CollectionMode != test.mode || result.TotalPosts != test.wantPosts || result.TotalComments != test.wantComments || result.UniqueUsers != test.wantUsers {
+				t.Fatalf("summary = mode %q posts %d comments %d users %d", result.CollectionMode, result.TotalPosts, result.TotalComments, result.UniqueUsers)
+			}
+			if result.UserStats[0].UID != test.wantTopUID || result.UserStats[0].Count != test.wantTopCount || result.UserStats[0].PostCount != test.wantPostCount || result.UserStats[0].CommentCount != test.wantCommentCount {
+				t.Fatalf("top user = %+v", result.UserStats[0])
+			}
+			hasTopMetrics := len(result.TopMetrics.Views) > 0 || len(result.TopMetrics.Recommendations) > 0 || len(result.TopMetrics.Comments) > 0
+			if hasTopMetrics != test.wantTopMetrics {
+				t.Fatalf("hasTopMetrics = %v, want %v: %+v", hasTopMetrics, test.wantTopMetrics, result.TopMetrics)
+			}
+		})
+	}
+}
+
+func TestScrapePagesCommentFailureKeepsPostResultsAndEmitsWarning(t *testing.T) {
+	t.Parallel()
+
+	recorder := &eventRecorder{}
+	scraper := newTestScraper(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/mini/board/lists/":
+			return htmlResponse(http.StatusOK, galleryHTML(
+				metricPostRow("10", "author1", "Alice", "", "First", "https://gall.dcinside.com/mini/board/view/?id=spv&no=10&page=1", "10", "2", "[1]"),
+			)), nil
+		case "/mini/board/view/":
+			return htmlResponse(http.StatusOK, commentViewHTML("comment-key", "MI", "")), nil
+		case "/board/comment/":
+			return jsonResponse(http.StatusInternalServerError, `{"error":"down"}`), nil
+		default:
+			t.Fatalf("unexpected request: %s", req.URL.String())
+			return nil, nil
+		}
+	})
+
+	result, err := scraper.Scrape(context.Background(), ScrapeRequest{
+		URL:            "https://gall.dcinside.com/mini/spv",
+		Pages:          1,
+		CollectionMode: collectionModeAll,
+	}, recorder.emit)
+	if err != nil {
+		t.Fatalf("Scrape returned error: %v", err)
+	}
+	if result.TotalPosts != 1 || result.TotalComments != 0 || result.UserStats[0].UID != "author1" {
+		t.Fatalf("result after comment failure = %+v", result)
+	}
+	recorder.requireContains(t, "warning")
+}
+
+func TestScrapeCommentsUsesFallbackGalleryTypeSecretAndPaginates(t *testing.T) {
+	t.Parallel()
+
+	commentRequests := 0
+	scraper := newTestScraper(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/mgallery/board/view/":
+			if req.Method != http.MethodGet {
+				t.Fatalf("view method = %s, want GET", req.Method)
+			}
+			return htmlResponse(http.StatusOK, commentViewHTML("comment-key", "", "secret-key")), nil
+		case "/board/comment/":
+			commentRequests++
+			if req.Header.Get("X-Requested-With") != "XMLHttpRequest" {
+				t.Fatalf("X-Requested-With = %q, want XMLHttpRequest", req.Header.Get("X-Requested-With"))
+			}
+			if req.Header.Get("Referer") != "https://gall.dcinside.com/mgallery/board/view/?id=testgal&no=20" {
+				t.Fatalf("Referer = %q", req.Header.Get("Referer"))
+			}
+			if err := req.ParseForm(); err != nil {
+				t.Fatalf("ParseForm returned error: %v", err)
+			}
+			if req.Form.Get("id") != "testgal" || req.Form.Get("no") != "20" || req.Form.Get("e_s_n_o") != "comment-key" || req.Form.Get("_GALLTYPE_") != "M" || req.Form.Get("secret_article_key") != "secret-key" {
+				t.Fatalf("comment form = %v", req.Form)
+			}
+			switch req.Form.Get("comment_page") {
+			case "1":
+				if req.Form.Get("prevCnt") != "0" {
+					t.Fatalf("page 1 prevCnt = %q, want 0", req.Form.Get("prevCnt"))
+				}
+				return jsonResponse(http.StatusOK, `{"total_cnt":3,"comments":[{"user_id":"u1","name":"Alice","ip":"","del_yn":"N"},{"user_id":"u2","name":"Bob","ip":"","del_yn":"N"}]}`), nil
+			case "2":
+				if req.Form.Get("prevCnt") != "2" {
+					t.Fatalf("page 2 prevCnt = %q, want 2", req.Form.Get("prevCnt"))
+				}
+				return jsonResponse(http.StatusOK, `{"total_cnt":3,"comments":[{"user_id":"u3","name":"Carol","ip":"","del_yn":"N"}]}`), nil
+			default:
+				t.Fatalf("unexpected comment page: %s", req.Form.Get("comment_page"))
+				return nil, nil
+			}
+		default:
+			t.Fatalf("unexpected request: %s", req.URL.String())
+			return nil, nil
+		}
+	})
+
+	comments, err := scraper.scrapeComments(context.Background(), GalleryInfo{GalleryID: "testgal", GalleryType: "mgallery"}, Post{
+		Number:          "20",
+		Title:           "Paged comments",
+		URL:             "https://gall.dcinside.com/mgallery/board/view/?id=testgal&no=20",
+		CommentCount:    3,
+		HasCommentCount: true,
+	})
+	if err != nil {
+		t.Fatalf("scrapeComments returned error: %v", err)
+	}
+	if commentRequests != 2 || len(comments) != 3 {
+		t.Fatalf("commentRequests=%d len(comments)=%d, want 2 and 3", commentRequests, len(comments))
+	}
+	if comments[2].UID != "u3" || comments[2].PostNumber != "20" || comments[2].PostURL == "" {
+		t.Fatalf("last comment projection = %+v", comments[2])
+	}
+}
+
+func TestScrapeCommentsMissingCommentKeyReturnsError(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	scraper := newTestScraper(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Path != "/mini/board/view/" {
+			t.Fatalf("unexpected request: %s", req.URL.String())
+		}
+		return htmlResponse(http.StatusOK, commentViewHTML("", "MI", "")), nil
+	})
+
+	_, err := scraper.scrapeComments(context.Background(), GalleryInfo{GalleryID: "spv", GalleryType: "mini"}, Post{
+		Number:          "10",
+		URL:             "https://gall.dcinside.com/mini/board/view/?id=spv&no=10",
+		CommentCount:    1,
+		HasCommentCount: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "comment key is missing") {
+		t.Fatalf("error = %v, want missing comment key", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want only view request", requests)
+	}
 }
 
 func TestScrapeDefaultsToOnePageWhenPagesIsZero(t *testing.T) {
@@ -737,6 +1066,46 @@ func TestScrapeDateRangeStopsOnOlderEmptyPage(t *testing.T) {
 	}
 	if result.PagesScraped != 2 || result.TotalPosts != 1 {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestScrapeDateRangeContinuesPastMixedPinnedDates(t *testing.T) {
+	requests := 0
+	scraper := newTestScraper(func(req *http.Request) (*http.Response, error) {
+		requests++
+		switch req.URL.Query().Get("page") {
+		case "1":
+			return htmlResponse(http.StatusOK, galleryHTML(
+				datedPostRow("pinned-old", "Pinned Old", "2025-07-07 20:03:18", "25.07.07")+
+					datedPostRow("latest", "Latest", "2026-07-03 20:16:46", "20:16"),
+			)), nil
+		case "2":
+			return htmlResponse(http.StatusOK, galleryHTML(
+				datedPostRow("target", "Target", "2026-06-02 12:00:00", "26.06.02")+
+					datedPostRow("older", "Older", "2026-05-31 23:59:59", "26.05.31"),
+			)), nil
+		default:
+			t.Fatalf("unexpected page query: %s", req.URL.RawQuery)
+			return nil, nil
+		}
+	})
+
+	result, err := scraper.Scrape(context.Background(), ScrapeRequest{
+		URL:       "https://gall.dcinside.com/mini/vsoop",
+		StartDate: "2026-06-01",
+		EndDate:   "2026-06-02",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Scrape returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+	if result.PagesScraped != 2 || result.TotalPosts != 1 || result.UniqueUsers != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.UserStats[0].UID != "target" {
+		t.Fatalf("included UID = %q, want target", result.UserStats[0].UID)
 	}
 }
 
@@ -924,6 +1293,109 @@ func TestFetchDocumentStatusHandlingAndResourceCleanup(t *testing.T) {
 	}
 }
 
+func TestFetchCommentPageStatusDecodeAndResourceCleanup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantError  string
+	}{
+		{name: "success", statusCode: http.StatusOK, body: `{"total_cnt":1,"comments":[{"user_id":"u1","name":"Alice","ip":"","del_yn":"N"}]}`},
+		{name: "client error", statusCode: http.StatusBadRequest, body: `{"error":"bad"}`, wantError: "comment request failed: 400"},
+		{name: "server error", statusCode: http.StatusBadGateway, body: `{"error":"down"}`, wantError: "comment server error: 502"},
+		{name: "invalid json", statusCode: http.StatusOK, body: `{`, wantError: "decode comments"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			bodyClosed := false
+			scraper := NewScraper(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodPost {
+					t.Fatalf("method = %s, want POST", req.Method)
+				}
+				if req.URL.String() != "https://gall.dcinside.com/board/comment/" {
+					t.Fatalf("URL = %s", req.URL.String())
+				}
+				if req.Header.Get("X-Requested-With") != "XMLHttpRequest" {
+					t.Fatalf("X-Requested-With = %q", req.Header.Get("X-Requested-With"))
+				}
+				if req.Header.Get("Referer") != "https://gall.dcinside.com/mini/board/view/?id=spv&no=10" {
+					t.Fatalf("Referer = %q", req.Header.Get("Referer"))
+				}
+				if err := req.ParseForm(); err != nil {
+					t.Fatalf("ParseForm returned error: %v", err)
+				}
+				if req.Form.Get("id") != "spv" || req.Form.Get("no") != "10" || req.Form.Get("comment_page") != "2" || req.Form.Get("prevCnt") != "3" {
+					t.Fatalf("comment form = %v", req.Form)
+				}
+				return &http.Response{
+					StatusCode: test.statusCode,
+					Body:       &trackingReadCloser{reader: strings.NewReader(test.body), closed: &bodyClosed},
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			})})
+
+			payload, err := scraper.fetchCommentPage(
+				context.Background(),
+				GalleryInfo{GalleryID: "spv", GalleryType: "mini"},
+				Post{Number: "10", URL: "https://gall.dcinside.com/mini/board/view/?id=spv&no=10"},
+				"comment-key",
+				"MI",
+				"secret",
+				2,
+				3,
+			)
+			if test.wantError == "" && err != nil {
+				t.Fatalf("fetchCommentPage returned error: %v", err)
+			}
+			if test.wantError != "" && (err == nil || !strings.Contains(err.Error(), test.wantError)) {
+				t.Fatalf("error = %v, want %q", err, test.wantError)
+			}
+			if test.wantError == "" && (payload.TotalCount != 1 || len(payload.Comments) != 1 || payload.Comments[0].UserID != "u1") {
+				t.Fatalf("payload = %+v, want one u1 comment", payload)
+			}
+			if !bodyClosed {
+				t.Fatal("response body was not closed")
+			}
+		})
+	}
+}
+
+func TestFetchCommentPageUsesDefaultClientAndPropagatesTransportError(t *testing.T) {
+	originalDefaultClient := http.DefaultClient
+	t.Cleanup(func() {
+		http.DefaultClient = originalDefaultClient
+	})
+
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/board/comment/" {
+			t.Fatalf("unexpected URL = %s", req.URL.String())
+		}
+		return nil, errors.New("dial failed")
+	})}
+
+	scraper := &Scraper{}
+	_, err := scraper.fetchCommentPage(
+		context.Background(),
+		GalleryInfo{GalleryID: "spv", GalleryType: "mini"},
+		Post{Number: "10", URL: "https://gall.dcinside.com/mini/board/view/?id=spv&no=10"},
+		"comment-key",
+		"MI",
+		"",
+		1,
+		0,
+	)
+	if err == nil || !strings.Contains(err.Error(), "dial failed") {
+		t.Fatalf("error = %v, want transport error", err)
+	}
+}
+
 func TestFetchDocumentPropagatesRequestAndTransportErrors(t *testing.T) {
 	t.Parallel()
 
@@ -1091,8 +1563,22 @@ func htmlResponse(statusCode int, body string) *http.Response {
 	}
 }
 
+func jsonResponse(statusCode int, body string) *http.Response {
+	response := htmlResponse(statusCode, body)
+	response.Header.Set("Content-Type", "application/json")
+	return response
+}
+
 func galleryHTML(rows string) string {
 	return `<table><tbody class="listwrap2">` + rows + `</tbody></table>`
+}
+
+func commentViewHTML(commentKey string, gallType string, secretKey string) string {
+	return `<html><body>` +
+		`<input type="hidden" id="e_s_n_o" name="e_s_n_o" value="` + commentKey + `">` +
+		`<input type="hidden" id="_GALLTYPE_" name="_GALLTYPE_" value="` + gallType + `">` +
+		`<input type="hidden" id="secret_article_key" name="secret_article_key" value="` + secretKey + `">` +
+		`</body></html>`
 }
 
 func postRow(uid string, nickname string, ip string) string {

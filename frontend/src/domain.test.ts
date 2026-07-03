@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  collectionCountLabel,
+  collectionModeLabel,
   escapeCSVField,
   isValidDCGalleryUrl,
   resultSummary,
@@ -50,28 +52,43 @@ describe('csv and filename formatting', () => {
   });
 });
 
+describe('collection labels', () => {
+  it.each([
+    [undefined, '게시글 수집', '게시글 수'],
+    ['posts', '게시글 수집', '게시글 수'],
+    ['posts_comments', '게시글 + 댓글 수집', '활동 수'],
+    ['comments', '댓글 수집', '댓글 수'],
+  ])('formats %s', (mode, modeLabel, countLabel) => {
+    expect(collectionModeLabel(mode)).toBe(modeLabel);
+    expect(collectionCountLabel(mode)).toBe(countLabel);
+  });
+});
+
 describe('resultSummary', () => {
   it('summarizes page-based results', () => {
     expect(
       resultSummary({
         galleryId: 'vsoop',
+        collectionMode: 'posts',
         pagesScraped: 3,
         totalPosts: 1200,
         uniqueUsers: 34,
       }),
-    ).toBe('vsoop · 3페이지 · 게시물 1,200개 · 사용자 34명');
+    ).toBe('vsoop · 3페이지 · 게시글 수집 · 게시물 1,200개 · 사용자 34명');
   });
 
   it('summarizes date-range results with open boundaries', () => {
     expect(
       resultSummary({
         galleryId: 'vsoop',
+        collectionMode: 'posts_comments',
         pagesScraped: 8,
         startDate: '2026-07-01',
         endDate: null,
         totalPosts: 12,
+        totalComments: 34,
         uniqueUsers: 5,
       }),
-    ).toBe('vsoop · 2026-07-01 ~ 최신 · 게시물 12개 · 사용자 5명');
+    ).toBe('vsoop · 2026-07-01 ~ 최신 · 게시글 + 댓글 수집 · 게시물 12개 · 댓글 34개 · 사용자 5명');
   });
 });
