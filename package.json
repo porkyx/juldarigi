@@ -12,8 +12,7 @@
     "electron": "NODE_ENV=development electron .",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && npm run electron\"",
     "electron:build": "npm run build && electron-builder",
-    "start:server": "node server/index.js",
-    "start:app": "concurrently \"npm run start:server\" \"open release/mac-arm64/줄다리기 - 갤창랭킹 수집기.app\"",
+    "start:server": "node server/index.js",    
     "clean": "rm -rf dist target release"
   },
   "devDependencies": {
@@ -43,7 +42,7 @@
     "extraResources": [
       {
         "from": "dist",
-        "to": "dist"
+        "to": "app.asar.unpacked/dist"
       }
     ],
     "mac": {
