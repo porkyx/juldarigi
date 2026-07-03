@@ -6,9 +6,11 @@ Wails + React TypeScript 기반의 standalone 데스크톱 앱입니다.
 
 - Go
 - Node.js
+- pnpm
 - Wails CLI
 
 ```powershell
+corepack enable pnpm
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 ```
 
