@@ -1,0 +1,394 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CalendarDays,
+  Clipboard,
+  Download,
+  FileText,
+  Loader2,
+  MousePointer,
+  Play,
+  Square,
+} from 'lucide-react';
+import { CancelScrape, ScrapeDCGallery } from '../wailsjs/go/main/App';
+import { main } from '../wailsjs/go/models';
+import { EventsOn } from '../wailsjs/runtime/runtime';
+
+type ScrapeMode = 'pages' | 'dates';
+
+interface ProgressPayload {
+  currentPage: number;
+  totalPages?: number;
+  totalPosts: number;
+  uniqueUsers: number;
+  message: string;
+}
+
+interface MessagePayload {
+  message: string;
+}
+
+const topLimit = 100;
+
+function App() {
+  const [url, setUrl] = useState('');
+  const [mode, setMode] = useState<ScrapeMode>('pages');
+  const [pages, setPages] = useState(1);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [progress, setProgress] = useState<ProgressPayload | null>(null);
+  const [result, setResult] = useState<main.ScrapeResult | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const tableRef = useRef<HTMLTableElement | null>(null);
+
+  const isValidUrl = useMemo(() => isValidDCGalleryUrl(url), [url]);
+  const visibleUsers = result?.userStats.slice(0, topLimit) ?? [];
+
+  useEffect(() => {
+    const unsubscribeProgress = EventsOn('scrape:progress', (payload: ProgressPayload) => {
+      setProgress(payload);
+    });
+    const unsubscribeInfo = EventsOn('scrape:info', (payload: MessagePayload) => {
+      setProgress({
+        currentPage: 0,
+        totalPages: 0,
+        totalPosts: 0,
+        uniqueUsers: 0,
+        message: payload.message,
+      });
+    });
+    const unsubscribeWarning = EventsOn('scrape:warning', (payload: MessagePayload) => {
+      setNotice(payload.message);
+    });
+
+    return () => {
+      unsubscribeProgress();
+      unsubscribeInfo();
+      unsubscribeWarning();
+    };
+  }, []);
+
+  async function startScraping() {
+    if (!isValidUrl || isLoading) {
+      return;
+    }
+
+    setIsLoading(true);
+    setProgress(null);
+    setResult(null);
+    setError('');
+    setNotice('');
+
+    const request: main.ScrapeRequest = {
+      url,
+      pages: mode === 'pages' ? Math.max(1, pages) : 0,
+      startDate: mode === 'dates' ? startDate : '',
+      endDate: mode === 'dates' ? endDate : '',
+    };
+
+    try {
+      const scrapeResult = await ScrapeDCGallery(request);
+      setResult(scrapeResult);
+      setNotice('완료되었습니다.');
+    } catch (scrapeError) {
+      setError(scrapeError instanceof Error ? scrapeError.message : String(scrapeError));
+    } finally {
+      setIsLoading(false);
+      setProgress(null);
+    }
+  }
+
+  async function cancelScraping() {
+    await CancelScrape();
+    setIsLoading(false);
+  }
+
+  async function copyTableData() {
+    if (!visibleUsers.length) {
+      return;
+    }
+
+    const rows = [
+      ['순위', '닉네임', '식별코드', 'IP', '게시물 수'].join('\t'),
+      ...visibleUsers.map((user, index) =>
+        [index + 1, user.nickname, user.uid, user.ip, `${user.count}개`].join('\t'),
+      ),
+    ];
+    const text = rows.join('\n');
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setNotice('테이블 데이터가 복사되었습니다.');
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setNotice('테이블 데이터가 복사되었습니다.');
+    }
+  }
+
+  function selectTableContent() {
+    if (!tableRef.current) {
+      return;
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(tableRef.current);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    setNotice('테이블이 선택되었습니다.');
+  }
+
+  function exportToCSV() {
+    if (!result || !visibleUsers.length) {
+      return;
+    }
+
+    const csvRows = [
+      ['순위', '닉네임', '식별코드', 'IP', '게시물수'].join(','),
+      ...visibleUsers.map((user, index) =>
+        [index + 1, escapeCSVField(user.nickname), escapeCSVField(user.uid), escapeCSVField(user.ip), user.count].join(','),
+      ),
+    ];
+
+    const blob = new Blob([`\uFEFF${csvRows.join('\n')}`], {
+      type: 'text/csv;charset=utf-8;',
+    });
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = `갤창랭킹_${safeFilePart(result.galleryId)}_${timestampForFilename()}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(downloadUrl);
+    setNotice('CSV 파일을 생성했습니다.');
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="app-header">
+        <div>
+          <h1>갤창랭킹 수집기</h1>
+          <p>{result ? `${result.galleryId} · ${result.totalPosts.toLocaleString()}개 게시물` : '줄다리기'}</p>
+        </div>
+        {isLoading ? (
+          <button className="icon-button danger" type="button" onClick={cancelScraping} title="중지">
+            <Square size={18} />
+            <span>중지</span>
+          </button>
+        ) : null}
+      </header>
+
+      <section className="control-band">
+        <div className="url-row">
+          <label htmlFor="gallery-url">Gallery URL</label>
+          <input
+            id="gallery-url"
+            className="url-input"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://gall.dcinside.com/mini/vsoop"
+            spellCheck={false}
+          />
+        </div>
+
+        <div className="mode-row" role="tablist" aria-label="스크래핑 모드">
+          <button
+            className={mode === 'pages' ? 'segment active' : 'segment'}
+            type="button"
+            onClick={() => setMode('pages')}
+          >
+            <FileText size={16} />
+            페이지
+          </button>
+          <button
+            className={mode === 'dates' ? 'segment active' : 'segment'}
+            type="button"
+            onClick={() => setMode('dates')}
+          >
+            <CalendarDays size={16} />
+            날짜
+          </button>
+        </div>
+
+        {mode === 'pages' ? (
+          <div className="field-row">
+            <label htmlFor="pages">페이지 수</label>
+            <input
+              id="pages"
+              className="compact-input"
+              type="number"
+              min={1}
+              value={pages}
+              onChange={(event) => setPages(Number(event.target.value) || 1)}
+            />
+          </div>
+        ) : (
+          <div className="date-grid">
+            <div className="field-row">
+              <label htmlFor="start-date">시작 날짜</label>
+              <input id="start-date" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+            </div>
+            <div className="field-row">
+              <label htmlFor="end-date">종료 날짜</label>
+              <input id="end-date" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+            </div>
+          </div>
+        )}
+
+        <button
+          className="primary-action"
+          type="button"
+          disabled={!isValidUrl || isLoading}
+          onClick={startScraping}
+        >
+          {isLoading ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+          {isLoading ? '스크래핑 중' : '스크래핑 시작'}
+        </button>
+      </section>
+
+      {progress ? (
+        <section className="progress-band" aria-live="polite">
+          <div>
+            <strong>{progress.message}</strong>
+            <span>
+              {progress.totalPages
+                ? `${progress.currentPage} / ${progress.totalPages} 페이지`
+                : `${progress.currentPage} 페이지`}
+            </span>
+          </div>
+          {progress.totalPages ? (
+            <progress max={progress.totalPages} value={progress.currentPage} />
+          ) : null}
+          <dl>
+            <div>
+              <dt>게시물</dt>
+              <dd>{progress.totalPosts.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>사용자</dt>
+              <dd>{progress.uniqueUsers.toLocaleString()}</dd>
+            </div>
+          </dl>
+        </section>
+      ) : null}
+
+      {error ? <section className="message error">{error}</section> : null}
+      {notice && !error ? <section className="message">{notice}</section> : null}
+
+      {result ? (
+        <section className="results-band">
+          <div className="results-heading">
+            <div>
+              <h2>1 ~ {Math.min(topLimit, result.userStats.length)}위 갤창목록</h2>
+              <p>{resultSummary(result)}</p>
+            </div>
+            <div className="table-actions">
+              <button type="button" onClick={copyTableData} title="복사">
+                <Clipboard size={16} />
+                복사
+              </button>
+              <button type="button" onClick={selectTableContent} title="전체선택">
+                <MousePointer size={16} />
+                전체선택
+              </button>
+              <button type="button" onClick={exportToCSV} title="CSV 내보내기">
+                <Download size={16} />
+                CSV
+              </button>
+            </div>
+          </div>
+
+          <div className="table-wrap">
+            <table ref={tableRef}>
+              <thead>
+                <tr>
+                  <th>순위</th>
+                  <th>닉네임</th>
+                  <th>식별코드</th>
+                  <th>IP</th>
+                  <th>게시물 수</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleUsers.map((user, index) => (
+                  <tr key={user.uid}>
+                    <td>{index + 1}</td>
+                    <td>{user.nickname}</td>
+                    <td className="mono">{user.uid}</td>
+                    <td className="mono">{user.ip}</td>
+                    <td>{user.count.toLocaleString()}개</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+    </main>
+  );
+}
+
+function isValidDCGalleryUrl(value: string) {
+  try {
+    const target = value.startsWith('http://') || value.startsWith('https://') ? value : `https://${value}`;
+    const parsed = new URL(target);
+    if (parsed.hostname !== 'gall.dcinside.com') {
+      return false;
+    }
+
+    const path = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+    if (path[0] === 'mini' && path[1] === 'board' && path[2] === 'lists') {
+      return Boolean(parsed.searchParams.get('id'));
+    }
+    if (path[0] === 'mgallery' && path[1] === 'board' && path[2] === 'lists') {
+      return Boolean(parsed.searchParams.get('id'));
+    }
+    if (path[0] === 'board' && path[1] === 'lists') {
+      return Boolean(parsed.searchParams.get('id'));
+    }
+    return (path[0] === 'mini' || path[0] === 'mgallery') ? Boolean(path[1]) : path.length === 1;
+  } catch {
+    return false;
+  }
+}
+
+function resultSummary(result: main.ScrapeResult) {
+  const period =
+    result.startDate || result.endDate
+      ? `${result.startDate ?? '처음'} ~ ${result.endDate ?? '최신'}`
+      : `${result.pagesScraped.toLocaleString()}페이지`;
+  return `${result.galleryId} · ${period} · 게시물 ${result.totalPosts.toLocaleString()}개 · 사용자 ${result.uniqueUsers.toLocaleString()}명`;
+}
+
+function escapeCSVField(field: string) {
+  if (field.includes(',') || field.includes('"') || field.includes('\n')) {
+    return `"${field.replace(/"/g, '""')}"`;
+  }
+  return field;
+}
+
+function safeFilePart(value: string) {
+  return value.replace(/[\\/:*?"<>|]/g, '_');
+}
+
+function timestampForFilename() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hour = String(now.getHours()).padStart(2, '0');
+  const minute = String(now.getMinutes()).padStart(2, '0');
+  return `${year}${month}${day}_${hour}${minute}`;
+}
+
+export default App;
