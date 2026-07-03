@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,17 +31,18 @@ type ScrapeRequest struct {
 }
 
 type ScrapeResult struct {
-	Success      bool       `json:"success"`
-	Type         string     `json:"type"`
-	GalleryID    string     `json:"galleryId"`
-	GalleryType  string     `json:"galleryType"`
-	URL          string     `json:"url"`
-	PagesScraped int        `json:"pagesScraped"`
-	StartDate    *string    `json:"startDate"`
-	EndDate      *string    `json:"endDate"`
-	TotalPosts   int        `json:"totalPosts"`
-	UniqueUsers  int        `json:"uniqueUsers"`
-	UserStats    []UserStat `json:"userStats"`
+	Success      bool           `json:"success"`
+	Type         string         `json:"type"`
+	GalleryID    string         `json:"galleryId"`
+	GalleryType  string         `json:"galleryType"`
+	URL          string         `json:"url"`
+	PagesScraped int            `json:"pagesScraped"`
+	StartDate    *string        `json:"startDate"`
+	EndDate      *string        `json:"endDate"`
+	TotalPosts   int            `json:"totalPosts"`
+	UniqueUsers  int            `json:"uniqueUsers"`
+	UserStats    []UserStat     `json:"userStats"`
+	TopMetrics   MetricRankings `json:"topMetrics"`
 }
 
 type UserStat struct {
@@ -48,6 +50,23 @@ type UserStat struct {
 	Nickname string `json:"nickname"`
 	IP       string `json:"ip"`
 	Count    int    `json:"count"`
+}
+
+type MetricRankings struct {
+	Views           []MetricRank `json:"views"`
+	Recommendations []MetricRank `json:"recommendations"`
+	Comments        []MetricRank `json:"comments"`
+}
+
+type MetricRank struct {
+	Rank       int    `json:"rank"`
+	UID        string `json:"uid"`
+	Nickname   string `json:"nickname"`
+	IP         string `json:"ip"`
+	Value      int    `json:"value"`
+	PostNumber string `json:"postNumber"`
+	PostTitle  string `json:"postTitle"`
+	PostURL    string `json:"postUrl"`
 }
 
 type ProgressInfo struct {
@@ -69,10 +88,19 @@ type GalleryInfo struct {
 }
 
 type Post struct {
-	UID      string
-	Nickname string
-	IP       string
-	Date     string
+	UID               string
+	Nickname          string
+	IP                string
+	Date              string
+	Number            string
+	Title             string
+	URL               string
+	ViewCount         int
+	HasViewCount      bool
+	RecommendCount    int
+	HasRecommendCount bool
+	CommentCount      int
+	HasCommentCount   bool
 }
 
 type datePageData struct {
@@ -81,9 +109,12 @@ type datePageData struct {
 }
 
 type scrapeTotals struct {
-	UserPostCount map[string]UserStat
-	TotalPosts    int
-	PagesScraped  int
+	UserPostCount          map[string]UserStat
+	UserTopViews           map[string]MetricRank
+	UserTopRecommendations map[string]MetricRank
+	UserTopComments        map[string]MetricRank
+	TotalPosts             int
+	PagesScraped           int
 }
 
 type Scraper struct {
@@ -217,7 +248,7 @@ func galleryInfoFromID(originalURL, galleryID, galleryType string) (GalleryInfo,
 }
 
 func (s *Scraper) scrapePages(ctx context.Context, galleryInfo GalleryInfo, pages int, emit EventEmitter) (scrapeTotals, error) {
-	totals := scrapeTotals{UserPostCount: map[string]UserStat{}}
+	totals := newScrapeTotals()
 	emitEvent(emit, "info", MessagePayload{Message: fmt.Sprintf("Starting page-based scraping for %d pages", pages)})
 
 	for pageNumber := 1; pageNumber <= pages; pageNumber++ {
@@ -243,8 +274,7 @@ func (s *Scraper) scrapePages(ctx context.Context, galleryInfo GalleryInfo, page
 			posts = nil
 		}
 
-		mergeUserCounts(totals.UserPostCount, aggregateUserPosts(posts))
-		totals.TotalPosts += len(posts)
+		addPostsToTotals(&totals, posts)
 		totals.PagesScraped = pageNumber
 
 		emitEvent(emit, "progress", ProgressInfo{
@@ -260,7 +290,7 @@ func (s *Scraper) scrapePages(ctx context.Context, galleryInfo GalleryInfo, page
 }
 
 func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, startDate, endDate string, emit EventEmitter) (scrapeTotals, error) {
-	totals := scrapeTotals{UserPostCount: map[string]UserStat{}}
+	totals := newScrapeTotals()
 	emitEvent(emit, "info", MessagePayload{Message: fmt.Sprintf("Starting date range scraping from %s to %s", displayDateBoundary(startDate, "beginning"), displayDateBoundary(endDate, "latest"))})
 
 	pageLimit := s.dateRangePageLimit()
@@ -287,8 +317,7 @@ func (s *Scraper) scrapeDateRange(ctx context.Context, galleryInfo GalleryInfo, 
 			continue
 		}
 
-		mergeUserCounts(totals.UserPostCount, aggregateUserPosts(pageData.Posts))
-		totals.TotalPosts += len(pageData.Posts)
+		addPostsToTotals(&totals, pageData.Posts)
 		totals.PagesScraped = pageNumber
 
 		emitEvent(emit, "progress", ProgressInfo{
@@ -415,6 +444,7 @@ func extractPostsWithDateRange(doc *goquery.Document, startDate, endDate string,
 			return
 		}
 		post.Date = postDate
+		enrichPostFromRow(row, &post)
 		data.Posts = append(data.Posts, post)
 	})
 
@@ -425,7 +455,12 @@ func extractPost(row *goquery.Selection) (Post, bool) {
 	if isNoticeRow(row) {
 		return Post{}, false
 	}
-	return extractPostFromWriter(row.Find("td.gall_writer").First())
+	post, ok := extractPostFromWriter(row.Find("td.gall_writer").First())
+	if !ok {
+		return Post{}, false
+	}
+	enrichPostFromRow(row, &post)
+	return post, true
 }
 
 func extractPostFromWriter(writerSelection *goquery.Selection) (Post, bool) {
@@ -444,14 +479,54 @@ func extractPostFromWriter(writerSelection *goquery.Selection) (Post, bool) {
 		nickname = strings.TrimSpace(writerSelection.Find(".nick_comm").First().Text())
 	}
 	if nickname == "" {
+		nickname = strings.TrimSpace(selectionAttr(writerSelection, "data-nick"))
+	}
+	if nickname == "" {
 		nickname = "Unknown"
+	}
+
+	ip := strings.TrimSpace(writerSelection.Find(".ip").First().Text())
+	if ip == "" {
+		ip = strings.TrimSpace(selectionAttr(writerSelection, "data-ip"))
 	}
 
 	return Post{
 		UID:      uid,
 		Nickname: nickname,
-		IP:       strings.TrimSpace(writerSelection.Find(".ip").First().Text()),
+		IP:       ip,
 	}, true
+}
+
+func enrichPostFromRow(row *goquery.Selection, post *Post) {
+	if row == nil || post == nil {
+		return
+	}
+
+	post.Number = strings.TrimSpace(row.Find("td.gall_num").First().Text())
+
+	titleSelection := row.Find("td.gall_tit").First()
+	if titleSelection.Length() > 0 {
+		post.CommentCount, post.HasCommentCount = extractCommentCount(titleSelection)
+		titleLink := titleSelection.Find("a").Not(".reply_numbox").First()
+		if titleLink.Length() == 0 {
+			titleLink = titleSelection.Find(`a[href*="/board/view/"]`).First()
+		}
+		if titleLink.Length() > 0 {
+			post.Title = normalizeWhitespace(titleLink.Text())
+			post.URL = normalizeDCInsideURL(selectionAttr(titleLink, "href"))
+		} else {
+			post.Title = normalizeWhitespace(titleSelection.Text())
+		}
+	}
+
+	if value, ok := extractMetricFromSelection(row.Find("td.gall_count").First()); ok {
+		post.ViewCount = value
+		post.HasViewCount = true
+	}
+	if value, ok := extractMetricFromSelection(row.Find("td.gall_recommend").First()); ok {
+		post.RecommendCount = value
+		post.HasRecommendCount = true
+	}
 }
 
 func isNoticeRow(row *goquery.Selection) bool {
@@ -464,6 +539,81 @@ func selectionAttrOrText(selection *goquery.Selection, attrName string) string {
 		return value
 	}
 	return selection.Text()
+}
+
+func selectionAttr(selection *goquery.Selection, attrName string) string {
+	value, exists := selection.Attr(attrName)
+	if !exists {
+		return ""
+	}
+	return value
+}
+
+func normalizeWhitespace(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func normalizeDCInsideURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return ""
+	}
+	base, _ := url.Parse("https://gall.dcinside.com")
+	resolved := base.ResolveReference(parsed)
+	if resolved.Scheme != "http" && resolved.Scheme != "https" {
+		return ""
+	}
+	if resolved.Hostname() != "gall.dcinside.com" {
+		return ""
+	}
+	return resolved.String()
+}
+
+func extractMetricFromSelection(selection *goquery.Selection) (int, bool) {
+	if selection.Length() == 0 {
+		return 0, false
+	}
+	return parseMetricText(selection.Text())
+}
+
+func extractCommentCount(titleSelection *goquery.Selection) (int, bool) {
+	if titleSelection.Length() == 0 {
+		return 0, false
+	}
+
+	replySelection := titleSelection.Find(".reply_num").First()
+	if replySelection.Length() == 0 {
+		return 0, true
+	}
+	return parseMetricText(replySelection.Text())
+}
+
+func parseMetricText(value string) (int, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || trimmed == "-" {
+		return 0, false
+	}
+
+	var digits strings.Builder
+	for _, char := range trimmed {
+		if char >= '0' && char <= '9' {
+			digits.WriteRune(char)
+		}
+	}
+	if digits.Len() == 0 {
+		return 0, false
+	}
+
+	metric, err := strconv.Atoi(digits.String())
+	if err != nil {
+		return 0, false
+	}
+	return metric, true
 }
 
 func normalizeDateWithNow(dateString string, now time.Time) string {
@@ -523,6 +673,48 @@ func aggregateUserPosts(posts []Post) map[string]UserStat {
 	return counts
 }
 
+func newScrapeTotals() scrapeTotals {
+	return scrapeTotals{
+		UserPostCount:          map[string]UserStat{},
+		UserTopViews:           map[string]MetricRank{},
+		UserTopRecommendations: map[string]MetricRank{},
+		UserTopComments:        map[string]MetricRank{},
+	}
+}
+
+func addPostsToTotals(totals *scrapeTotals, posts []Post) {
+	if totals == nil {
+		return
+	}
+	ensureTotalsMaps(totals)
+	mergeUserCounts(totals.UserPostCount, aggregateUserPosts(posts))
+	mergeUserMetricBests(totals.UserTopViews, posts, func(post Post) (int, bool) {
+		return post.ViewCount, post.HasViewCount
+	})
+	mergeUserMetricBests(totals.UserTopRecommendations, posts, func(post Post) (int, bool) {
+		return post.RecommendCount, post.HasRecommendCount
+	})
+	mergeUserMetricBests(totals.UserTopComments, posts, func(post Post) (int, bool) {
+		return post.CommentCount, post.HasCommentCount
+	})
+	totals.TotalPosts += len(posts)
+}
+
+func ensureTotalsMaps(totals *scrapeTotals) {
+	if totals.UserPostCount == nil {
+		totals.UserPostCount = map[string]UserStat{}
+	}
+	if totals.UserTopViews == nil {
+		totals.UserTopViews = map[string]MetricRank{}
+	}
+	if totals.UserTopRecommendations == nil {
+		totals.UserTopRecommendations = map[string]MetricRank{}
+	}
+	if totals.UserTopComments == nil {
+		totals.UserTopComments = map[string]MetricRank{}
+	}
+}
+
 func mergeUserCounts(target map[string]UserStat, source map[string]UserStat) {
 	for uid, sourceUser := range source {
 		targetUser := target[uid]
@@ -532,6 +724,36 @@ func mergeUserCounts(target map[string]UserStat, source map[string]UserStat) {
 		}
 		targetUser.Count += sourceUser.Count
 		target[uid] = targetUser
+	}
+}
+
+func mergeUserMetricBests(target map[string]MetricRank, posts []Post, valueFor func(Post) (int, bool)) {
+	for _, post := range posts {
+		if post.UID == "" {
+			continue
+		}
+		value, ok := valueFor(post)
+		if !ok {
+			continue
+		}
+
+		candidate := metricRankFromPost(post, value)
+		current, exists := target[post.UID]
+		if !exists || candidate.Value > current.Value {
+			target[post.UID] = candidate
+		}
+	}
+}
+
+func metricRankFromPost(post Post, value int) MetricRank {
+	return MetricRank{
+		UID:        post.UID,
+		Nickname:   post.Nickname,
+		IP:         post.IP,
+		Value:      value,
+		PostNumber: post.Number,
+		PostTitle:  post.Title,
+		PostURL:    post.URL,
 	}
 }
 
@@ -554,6 +776,35 @@ func sortUserStats(userPostCount map[string]UserStat) []UserStat {
 	return users
 }
 
+func topMetricRanks(userMetricBests map[string]MetricRank, limit int) []MetricRank {
+	if limit < 1 {
+		return []MetricRank{}
+	}
+
+	ranks := make([]MetricRank, 0, len(userMetricBests))
+	for _, rank := range userMetricBests {
+		ranks = append(ranks, rank)
+	}
+
+	sort.Slice(ranks, func(i, j int) bool {
+		if ranks[i].Value != ranks[j].Value {
+			return ranks[i].Value > ranks[j].Value
+		}
+		if ranks[i].Nickname != ranks[j].Nickname {
+			return ranks[i].Nickname < ranks[j].Nickname
+		}
+		return ranks[i].UID < ranks[j].UID
+	})
+
+	if limit < len(ranks) {
+		ranks = ranks[:limit]
+	}
+	for index := range ranks {
+		ranks[index].Rank = index + 1
+	}
+	return ranks
+}
+
 func formatScrapeResult(galleryInfo GalleryInfo, totals scrapeTotals, startDate, endDate string) *ScrapeResult {
 	userStats := sortUserStats(totals.UserPostCount)
 	return &ScrapeResult{
@@ -568,6 +819,11 @@ func formatScrapeResult(galleryInfo GalleryInfo, totals scrapeTotals, startDate,
 		TotalPosts:   totals.TotalPosts,
 		UniqueUsers:  len(userStats),
 		UserStats:    userStats,
+		TopMetrics: MetricRankings{
+			Views:           topMetricRanks(totals.UserTopViews, 3),
+			Recommendations: topMetricRanks(totals.UserTopRecommendations, 3),
+			Comments:        topMetricRanks(totals.UserTopComments, 3),
+		},
 	}
 }
 

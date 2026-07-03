@@ -260,6 +260,98 @@ dd {
   font-size: 13px;
 }
 
+.metric-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 12px 0;
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.metric-group {
+  min-width: 0;
+}
+
+.metric-group h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  color: #334155;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.metric-group ol {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.metric-group li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px 0;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.metric-group li:last-child {
+  border-bottom: 0;
+}
+
+.metric-rank {
+  color: #475569;
+  font-weight: 750;
+  text-align: center;
+}
+
+.metric-group strong,
+.metric-group span,
+.metric-group a {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-group strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.metric-group span,
+.metric-group a {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.metric-group a {
+  color: #1d4ed8;
+  text-decoration: none;
+}
+
+.metric-group a:hover {
+  text-decoration: underline;
+}
+
+.metric-group em {
+  color: #0f766e;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
 .table-actions {
   display: flex;
   flex-wrap: wrap;
@@ -357,6 +449,10 @@ tbody tr:hover {
   .results-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .metric-summary {
+    grid-template-columns: 1fr;
   }
 }
 

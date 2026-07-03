@@ -3,11 +3,14 @@ import {
   CalendarDays,
   Clipboard,
   Download,
+  Eye,
   FileText,
   Loader2,
+  MessageSquare,
   MousePointer,
   Play,
   Square,
+  ThumbsUp,
 } from 'lucide-react';
 import { CancelScrape, ScrapeDCGallery } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
@@ -36,6 +39,14 @@ interface MessagePayload {
 
 const topLimit = 100;
 
+function metricPostLabel(entry: main.MetricRank) {
+  const number = entry.postNumber ? `${entry.postNumber}번` : '';
+  if (number && entry.postTitle) {
+    return `${number} · ${entry.postTitle}`;
+  }
+  return entry.postTitle || (number ? `${number} 글` : '대상 글');
+}
+
 function App() {
   const [url, setUrl] = useState('');
   const [mode, setMode] = useState<ScrapeMode>('pages');
@@ -51,6 +62,33 @@ function App() {
 
   const isValidUrl = useMemo(() => isValidDCGalleryUrl(url), [url]);
   const visibleUsers = result?.userStats.slice(0, topLimit) ?? [];
+  const metricGroups = useMemo(
+    () => [
+      {
+        key: 'views',
+        title: '조회수 Top 3',
+        unit: '회',
+        rows: result?.topMetrics?.views ?? [],
+        Icon: Eye,
+      },
+      {
+        key: 'recommendations',
+        title: '추천 Top 3',
+        unit: '개',
+        rows: result?.topMetrics?.recommendations ?? [],
+        Icon: ThumbsUp,
+      },
+      {
+        key: 'comments',
+        title: '댓글 Top 3',
+        unit: '개',
+        rows: result?.topMetrics?.comments ?? [],
+        Icon: MessageSquare,
+      },
+    ],
+    [result],
+  );
+  const hasMetricStats = metricGroups.some((group) => group.rows.length > 0);
 
   useEffect(() => {
     const unsubscribeProgress = EventsOn('scrape:progress', (payload: ProgressPayload) => {
@@ -160,11 +198,34 @@ function App() {
     }
 
     const csvRows = [
+      ['게시글 수 랭킹'].join(','),
       ['순위', '닉네임', '식별코드', 'IP', '게시물수'].join(','),
       ...visibleUsers.map((user, index) =>
         [index + 1, escapeCSVField(user.nickname), escapeCSVField(user.uid), escapeCSVField(user.ip), user.count].join(','),
       ),
     ];
+    for (const group of metricGroups) {
+      if (!group.rows.length) {
+        continue;
+      }
+      csvRows.push('');
+      csvRows.push(group.title);
+      csvRows.push(['순위', '닉네임', '식별코드', 'IP', `값(${group.unit})`, '글번호', '제목', 'URL'].join(','));
+      csvRows.push(
+        ...group.rows.map((entry) =>
+          [
+            entry.rank,
+            escapeCSVField(entry.nickname),
+            escapeCSVField(entry.uid),
+            escapeCSVField(entry.ip),
+            entry.value,
+            escapeCSVField(entry.postNumber),
+            escapeCSVField(entry.postTitle),
+            escapeCSVField(entry.postUrl),
+          ].join(','),
+        ),
+      );
+    }
 
     const blob = new Blob([`\uFEFF${csvRows.join('\n')}`], {
       type: 'text/csv;charset=utf-8;',
@@ -296,7 +357,7 @@ function App() {
         <section className="results-band">
           <div className="results-heading">
             <div>
-              <h2>1 ~ {Math.min(topLimit, result.userStats.length)}위 갤창목록</h2>
+              <h2>1 ~ {Math.min(topLimit, result.userStats.length)}위 게시글 수 랭킹</h2>
               <p>{resultSummary(result)}</p>
             </div>
             <div className="table-actions">
@@ -314,6 +375,43 @@ function App() {
               </button>
             </div>
           </div>
+
+          {hasMetricStats ? (
+            <div className="metric-summary" aria-label="사용자별 최고 글 통계">
+              {metricGroups.map((group) => {
+                const Icon = group.Icon;
+                return (
+                  <div className="metric-group" key={group.key}>
+                    <h3>
+                      <Icon size={15} />
+                      {group.title}
+                    </h3>
+                    <ol>
+                      {group.rows.map((entry) => (
+                        <li key={`${group.key}-${entry.uid}`}>
+                          <span className="metric-rank">{entry.rank}</span>
+                          <div>
+                            <strong>{entry.nickname}</strong>
+                            {entry.postUrl ? (
+                              <a href={entry.postUrl} target="_blank" rel="noreferrer">
+                                {metricPostLabel(entry)}
+                              </a>
+                            ) : (
+                              <span>{metricPostLabel(entry)}</span>
+                            )}
+                          </div>
+                          <em>
+                            {entry.value.toLocaleString()}
+                            {group.unit}
+                          </em>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
 
           <div className="table-wrap">
             <table ref={tableRef}>

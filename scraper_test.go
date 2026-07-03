@@ -186,6 +186,141 @@ func TestExtractPostsFromDocumentSkipsNoticeRows(t *testing.T) {
 	}
 }
 
+func TestExtractPostsFromDocumentIncludesListMetrics(t *testing.T) {
+	t.Parallel()
+
+	doc := mustDocument(t, galleryHTML(
+		metricPostRow("123", "u1", "Alice", "1.2", "First title", "/mini/board/view/?id=spv&no=123&page=1", "1,234", "56", "[12]")+
+			metricPostRow("124", "u2", "Bob", "", "No reply title", "https://gall.dcinside.com/mini/board/view/?id=spv&no=124&page=1", "0", "0", ""),
+	))
+
+	posts := extractPostsFromDocument(doc)
+	if len(posts) != 2 {
+		t.Fatalf("len(posts) = %d, want 2", len(posts))
+	}
+
+	first := posts[0]
+	if first.Number != "123" || first.Title != "First title" {
+		t.Fatalf("first post identity = %+v, want number and title", first)
+	}
+	if first.URL != "https://gall.dcinside.com/mini/board/view/?id=spv&no=123&page=1" {
+		t.Fatalf("first URL = %q, want absolute DCInside URL", first.URL)
+	}
+	if first.Nickname != "Alice" || first.IP != "1.2" {
+		t.Fatalf("writer fallback fields = nickname %q ip %q, want Alice and 1.2", first.Nickname, first.IP)
+	}
+	if !first.HasViewCount || first.ViewCount != 1234 {
+		t.Fatalf("view metric = %d/%v, want 1234/true", first.ViewCount, first.HasViewCount)
+	}
+	if !first.HasRecommendCount || first.RecommendCount != 56 {
+		t.Fatalf("recommend metric = %d/%v, want 56/true", first.RecommendCount, first.HasRecommendCount)
+	}
+	if !first.HasCommentCount || first.CommentCount != 12 {
+		t.Fatalf("comment metric = %d/%v, want 12/true", first.CommentCount, first.HasCommentCount)
+	}
+
+	second := posts[1]
+	if !second.HasCommentCount || second.CommentCount != 0 {
+		t.Fatalf("missing reply box comment metric = %d/%v, want 0/true", second.CommentCount, second.HasCommentCount)
+	}
+	if !second.HasViewCount || second.ViewCount != 0 {
+		t.Fatalf("zero view metric = %d/%v, want 0/true", second.ViewCount, second.HasViewCount)
+	}
+}
+
+func TestParseMetricText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  int
+		ok    bool
+	}{
+		{name: "empty", input: "", ok: false},
+		{name: "dash", input: "-", ok: false},
+		{name: "zero", input: "0", want: 0, ok: true},
+		{name: "comma", input: "1,234", want: 1234, ok: true},
+		{name: "reply brackets", input: "[9]", want: 9, ok: true},
+		{name: "no digits", input: "abc", ok: false},
+		{name: "overflow", input: strings.Repeat("9", 64), ok: false},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := parseMetricText(test.input)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("parseMetricText(%q) = %d/%v, want %d/%v", test.input, got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
+func TestEnrichPostFromRowHandlesMissingOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	post := Post{UID: "u1"}
+	enrichPostFromRow(nil, &post)
+	if post.Number != "" || post.HasViewCount || post.HasRecommendCount || post.HasCommentCount {
+		t.Fatalf("nil row changed post metrics: %+v", post)
+	}
+
+	row := mustDocument(t, `
+		<table><tbody class="listwrap2">
+			<tr>
+				<td class="gall_num">10</td>
+				<td class="gall_tit ub-word"> Plain title </td>
+			</tr>
+		</tbody></table>
+	`).Find("tr").First()
+	enrichPostFromRow(row, nil)
+
+	post = Post{UID: "u2"}
+	enrichPostFromRow(row, &post)
+	if post.Number != "10" || post.Title != "Plain title" {
+		t.Fatalf("post identity = %+v, want number 10 and plain title", post)
+	}
+	if !post.HasCommentCount || post.CommentCount != 0 {
+		t.Fatalf("comment metric = %d/%v, want zero comment count", post.CommentCount, post.HasCommentCount)
+	}
+	if post.HasViewCount || post.HasRecommendCount {
+		t.Fatalf("missing count cells produced metrics: %+v", post)
+	}
+}
+
+func TestExtractCommentCountBoundaries(t *testing.T) {
+	t.Parallel()
+
+	emptySelection := mustDocument(t, `<table></table>`).Find("td.gall_tit").First()
+	if count, ok := extractCommentCount(emptySelection); count != 0 || ok {
+		t.Fatalf("empty title comment count = %d/%v, want 0/false", count, ok)
+	}
+
+	invalidReply := mustDocument(t, `<td class="gall_tit"><span class="reply_num">[abc]</span></td>`).Find("td.gall_tit").First()
+	if count, ok := extractCommentCount(invalidReply); count != 0 || ok {
+		t.Fatalf("invalid reply comment count = %d/%v, want 0/false", count, ok)
+	}
+}
+
+func TestNormalizeDCInsideURLBoundaries(t *testing.T) {
+	t.Parallel()
+
+	if got := normalizeDCInsideURL(""); got != "" {
+		t.Fatalf("empty URL normalized to %q, want empty", got)
+	}
+	if got := normalizeDCInsideURL("http://[::1"); got != "" {
+		t.Fatalf("invalid URL normalized to %q, want empty", got)
+	}
+	if got := normalizeDCInsideURL("javascript:alert(1)"); got != "" {
+		t.Fatalf("script URL normalized to %q, want empty", got)
+	}
+	if got := normalizeDCInsideURL("https://example.com/mini/board/view/?id=spv&no=1"); got != "" {
+		t.Fatalf("external URL normalized to %q, want empty", got)
+	}
+}
+
 func TestExtractPostsWithDateRange(t *testing.T) {
 	t.Parallel()
 
@@ -303,6 +438,117 @@ func TestMergeUserCountsAndFormatResult(t *testing.T) {
 	}
 	if result.EndDate != nil {
 		t.Fatalf("EndDate = %v, want nil", result.EndDate)
+	}
+	if len(result.TopMetrics.Views) != 0 || len(result.TopMetrics.Recommendations) != 0 || len(result.TopMetrics.Comments) != 0 {
+		t.Fatalf("empty metric maps produced top metrics: %+v", result.TopMetrics)
+	}
+}
+
+func TestAddPostsToTotalsBuildsTopMetricRankingsByUserBestPost(t *testing.T) {
+	t.Parallel()
+
+	totals := newScrapeTotals()
+	addPostsToTotals(&totals, []Post{
+		{
+			UID: "u1", Nickname: "Alice", Number: "1", Title: "Alice early",
+			ViewCount: 10, HasViewCount: true, RecommendCount: 1, HasRecommendCount: true, CommentCount: 1, HasCommentCount: true,
+		},
+		{
+			UID: "u1", Nickname: "Alice", Number: "2", Title: "Alice best", URL: "https://gall.dcinside.com/mini/board/view/?id=spv&no=2",
+			ViewCount: 40, HasViewCount: true, RecommendCount: 2, HasRecommendCount: true, CommentCount: 1, HasCommentCount: true,
+		},
+		{
+			UID: "u2", Nickname: "Bob", Number: "3", Title: "Bob post",
+			ViewCount: 30, HasViewCount: true, RecommendCount: 10, HasRecommendCount: true, CommentCount: 4, HasCommentCount: true,
+		},
+		{
+			UID: "u3", Nickname: "Carol", Number: "4", Title: "Carol post",
+			ViewCount: 30, HasViewCount: true, RecommendCount: 8, HasRecommendCount: true, CommentCount: 9, HasCommentCount: true,
+		},
+		{
+			UID: "u4", Nickname: "Dave", Number: "5", Title: "Dave post",
+			ViewCount: 20, HasViewCount: true, RecommendCount: 9, HasRecommendCount: true, CommentCount: 2, HasCommentCount: true,
+		},
+		{UID: "u5", Nickname: "Metricless"},
+	})
+
+	result := formatScrapeResult(
+		GalleryInfo{GalleryID: "spv", GalleryType: "mini", OriginalURL: "https://gall.dcinside.com/mini/spv"},
+		totals,
+		"",
+		"",
+	)
+	if result.TotalPosts != 6 || result.UniqueUsers != 5 {
+		t.Fatalf("summary = posts %d users %d, want 6 posts and 5 users", result.TotalPosts, result.UniqueUsers)
+	}
+	if result.UserStats[0].UID != "u1" || result.UserStats[0].Count != 2 {
+		t.Fatalf("post count ranking top = %+v, want u1 count 2", result.UserStats[0])
+	}
+
+	requireMetricOrder(t, result.TopMetrics.Views, []string{"u1", "u2", "u3"})
+	if result.TopMetrics.Views[0].PostNumber != "2" || result.TopMetrics.Views[0].PostTitle != "Alice best" {
+		t.Fatalf("u1 top view post = %+v, want Alice best post", result.TopMetrics.Views[0])
+	}
+	requireMetricOrder(t, result.TopMetrics.Recommendations, []string{"u2", "u4", "u3"})
+	requireMetricOrder(t, result.TopMetrics.Comments, []string{"u3", "u2", "u4"})
+}
+
+func TestTopMetricRanksBoundariesAndTieOrder(t *testing.T) {
+	t.Parallel()
+
+	if got := topMetricRanks(nil, 3); len(got) != 0 {
+		t.Fatalf("nil ranks length = %d, want 0", len(got))
+	}
+	if got := topMetricRanks(map[string]MetricRank{"u1": {UID: "u1", Value: 1}}, 0); len(got) != 0 {
+		t.Fatalf("zero limit ranks length = %d, want 0", len(got))
+	}
+	if got := topMetricRanks(map[string]MetricRank{"u1": {UID: "u1", Value: 1}}, -1); len(got) != 0 {
+		t.Fatalf("negative limit ranks length = %d, want 0", len(got))
+	}
+
+	ranks := topMetricRanks(map[string]MetricRank{
+		"u1": {UID: "u1", Nickname: "Bob", Value: 10, PostNumber: "2"},
+		"u2": {UID: "u2", Nickname: "Alice", Value: 10, PostNumber: "3"},
+		"u3": {UID: "u3", Nickname: "Alice", Value: 10, PostNumber: "1"},
+	}, 3)
+	requireMetricOrder(t, ranks, []string{"u2", "u3", "u1"})
+	for index, rank := range ranks {
+		if rank.Rank != index+1 {
+			t.Fatalf("rank[%d].Rank = %d, want %d", index, rank.Rank, index+1)
+		}
+	}
+}
+
+func TestAddPostsToTotalsHandlesNilAndIncompleteMetricPosts(t *testing.T) {
+	t.Parallel()
+
+	addPostsToTotals(nil, []Post{{UID: "ignored", HasViewCount: true, ViewCount: 99}})
+
+	var totals scrapeTotals
+	addPostsToTotals(&totals, []Post{
+		{UID: "", Nickname: "No UID", ViewCount: 99, HasViewCount: true},
+		{UID: "u1", Nickname: "Alice", ViewCount: 10, HasViewCount: true},
+		{UID: "u1", Nickname: "Alice", ViewCount: 5, HasViewCount: true},
+		{UID: "u2", Nickname: "Bob"},
+	})
+
+	if totals.TotalPosts != 4 {
+		t.Fatalf("TotalPosts = %d, want 4", totals.TotalPosts)
+	}
+	if totals.UserPostCount == nil || totals.UserTopViews == nil || totals.UserTopRecommendations == nil || totals.UserTopComments == nil {
+		t.Fatalf("totals maps were not initialized: %+v", totals)
+	}
+	if _, exists := totals.UserTopViews[""]; exists {
+		t.Fatal("empty UID produced a top view metric")
+	}
+	if rank := totals.UserTopViews["u1"]; rank.Value != 10 {
+		t.Fatalf("u1 top view value = %+v, want 10", rank)
+	}
+	if len(totals.UserTopRecommendations) != 0 || len(totals.UserTopComments) != 0 {
+		t.Fatalf("metricless posts produced recommendation/comment rankings: %+v %+v", totals.UserTopRecommendations, totals.UserTopComments)
+	}
+	if totals.UserPostCount["u1"].Count != 2 || totals.UserPostCount["u2"].Count != 1 {
+		t.Fatalf("post counts = %+v, want u1=2 and u2=1", totals.UserPostCount)
 	}
 }
 
@@ -853,6 +1099,20 @@ func postRow(uid string, nickname string, ip string) string {
 	return `<tr><td class="gall_writer" data-uid="` + uid + `"><span class="nickname">` + nickname + `</span><span class="ip">` + ip + `</span></td></tr>`
 }
 
+func metricPostRow(number string, uid string, nickname string, ip string, title string, href string, views string, recommends string, replies string) string {
+	replyHTML := ""
+	if replies != "" {
+		replyHTML = `<a class="reply_numbox" href="` + href + `"><span class="reply_num">` + replies + `</span></a>`
+	}
+	return `<tr>` +
+		`<td class="gall_num">` + number + `</td>` +
+		`<td class="gall_tit ub-word"><a href="` + href + `">` + title + `</a>` + replyHTML + `</td>` +
+		`<td class="gall_writer ub-writer" data-nick="` + nickname + `" data-uid="` + uid + `" data-ip="` + ip + `"></td>` +
+		`<td class="gall_count">` + views + `</td>` +
+		`<td class="gall_recommend">` + recommends + `</td>` +
+		`</tr>`
+}
+
 func datedPostRow(uid string, nickname string, dateTitle string, dateText string) string {
 	return `<tr><td class="gall_date" title="` + dateTitle + `">` + dateText + `</td><td class="gall_writer" data-uid="` + uid + `"><span class="nickname">` + nickname + `</span></td></tr>`
 }
@@ -917,4 +1177,16 @@ func (r *eventRecorder) requireContains(t *testing.T, name string) {
 		}
 	}
 	t.Fatalf("events do not contain %q: %+v", name, r.events)
+}
+
+func requireMetricOrder(t *testing.T, ranks []MetricRank, wantUIDs []string) {
+	t.Helper()
+	if len(ranks) != len(wantUIDs) {
+		t.Fatalf("metric rank length = %d, want %d: %+v", len(ranks), len(wantUIDs), ranks)
+	}
+	for index, wantUID := range wantUIDs {
+		if ranks[index].UID != wantUID {
+			t.Fatalf("rank[%d].UID = %q, want %q: %+v", index, ranks[index].UID, wantUID, ranks)
+		}
+	}
 }
